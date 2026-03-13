@@ -3,6 +3,7 @@ import Link from "next/link";
 import { AuthPanel } from "../components/auth-panel";
 import { FeatureCard } from "../components/feature-card";
 import { OnboardingPanel } from "../components/onboarding-panel";
+import { ProgressDashboard } from "../components/progress-dashboard";
 import { RoleplayChat } from "../components/roleplay-chat";
 import { ScenarioPicker } from "../components/scenario-picker";
 
@@ -81,6 +82,13 @@ export default function HomePage() {
               Open Phrase Vault
             </Link>
           </div>
+        </article>
+      </section>
+
+      <section className="progress-shell">
+        <article className="panel progress-card-shell">
+          <h2>Progress Dashboard</h2>
+          <ProgressDashboard />
         </article>
       </section>
     </main>

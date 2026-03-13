@@ -130,6 +130,191 @@ function normalizeOptionalPhraseContext(input: string | undefined) {
   return normalized.length > 0 ? normalized : null;
 }
 
+function clampScore(value: number) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function normalizeWeakAreaLabel(input: string) {
+  return input.trim().replace(/\s+/g, " ").slice(0, 64);
+}
+
+function normalizeWeakAreas(input: unknown, maxItems = 6) {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const output: string[] = [];
+
+  for (const item of input) {
+    if (typeof item !== "string") {
+      continue;
+    }
+
+    const label = normalizeWeakAreaLabel(item);
+
+    if (!label) {
+      continue;
+    }
+
+    const dedupeKey = label.toLowerCase();
+
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+
+    seen.add(dedupeKey);
+    output.push(label);
+
+    if (output.length >= maxItems) {
+      break;
+    }
+  }
+
+  return output;
+}
+
+function extractWhyLines(explanation: unknown) {
+  if (Array.isArray(explanation)) {
+    return explanation
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  if (explanation && typeof explanation === "object") {
+    const why = (explanation as { why?: unknown }).why;
+
+    if (Array.isArray(why)) {
+      return why
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+  }
+
+  return [];
+}
+
+const weakAreaMatchers = [
+  { pattern: /\b(article|a\/an|the)\b/i, label: "Articles" },
+  { pattern: /\b(tense|past|present|future)\b/i, label: "Verb Tenses" },
+  { pattern: /\b(preposition|in|on|at)\b/i, label: "Prepositions" },
+  { pattern: /\b(word order|order)\b/i, label: "Word Order" },
+  { pattern: /\b(vocabulary|word choice)\b/i, label: "Vocabulary Range" },
+  { pattern: /\b(clarity|clear|natural)\b/i, label: "Natural Phrasing" },
+  { pattern: /\b(question form|question)\b/i, label: "Question Forms" },
+  { pattern: /\b(confidence|hesitat|flow)\b/i, label: "Speaking Confidence" },
+  { pattern: /\b(grammar|grammatical)\b/i, label: "Grammar Accuracy" }
+] as const;
+
+function inferWeakAreasFromExplanations(explanations: unknown[]) {
+  const scored = new Map<string, number>();
+
+  for (const explanation of explanations) {
+    const whyLines = extractWhyLines(explanation);
+
+    for (const line of whyLines) {
+      for (const matcher of weakAreaMatchers) {
+        if (matcher.pattern.test(line)) {
+          scored.set(matcher.label, (scored.get(matcher.label) ?? 0) + 1);
+        }
+      }
+    }
+  }
+
+  return Array.from(scored.entries())
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 6)
+    .map(([label]) => label);
+}
+
+function buildFallbackWeakAreas(input: {
+  userTurnCount: number;
+  savedPhraseCount: number;
+  sessionsCount: number;
+}) {
+  const fallback: string[] = [];
+
+  if (input.userTurnCount < 8) {
+    fallback.push("Speaking Confidence");
+  }
+
+  if (input.savedPhraseCount < 5) {
+    fallback.push("Vocabulary Range");
+  }
+
+  if (input.sessionsCount < 4) {
+    fallback.push("Consistency");
+  }
+
+  fallback.push("Natural Phrasing");
+
+  return normalizeWeakAreas(fallback, 4);
+}
+
+function toUtcDayKey(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function shiftUtcDayKey(dayKey: string, offsetDays: number) {
+  const date = new Date(`${dayKey}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + offsetDays);
+  return toUtcDayKey(date);
+}
+
+function computeStreakDays(dayKeys: Set<string>) {
+  if (dayKeys.size === 0) {
+    return 0;
+  }
+
+  const today = toUtcDayKey(new Date());
+  let cursor = dayKeys.has(today) ? today : shiftUtcDayKey(today, -1);
+
+  if (!dayKeys.has(cursor)) {
+    return 0;
+  }
+
+  let streak = 0;
+
+  while (dayKeys.has(cursor)) {
+    streak += 1;
+    cursor = shiftUtcDayKey(cursor, -1);
+  }
+
+  return streak;
+}
+
+function buildFallbackScores(input: {
+  userTurnCount: number;
+  savedPhraseCount: number;
+  sessionsCount: number;
+  activeDaysCount: number;
+}) {
+  const fluencyScore =
+    30 +
+    Math.min(35, input.userTurnCount * 2) +
+    Math.min(20, input.activeDaysCount * 3);
+  const vocabularyScore =
+    25 +
+    Math.min(45, input.savedPhraseCount * 4) +
+    Math.min(20, Math.floor(input.userTurnCount / 3) * 3);
+  const consistencyScore =
+    20 +
+    Math.min(55, input.activeDaysCount * 5) +
+    Math.min(20, input.sessionsCount * 2);
+
+  return {
+    fluencyScore: clampScore(fluencyScore),
+    vocabularyScore: clampScore(vocabularyScore),
+    consistencyScore: clampScore(consistencyScore)
+  };
+}
+
 async function releaseRedisLock(
   redis: RedisClientType,
   key: string,
@@ -211,6 +396,230 @@ app.get(
       firebaseUid: request.authUser.uid,
       emailVerified: request.authUser.email_verified ?? false
     }
+  });
+  }
+);
+
+app.get(
+  "/v1/progress",
+  { preHandler: [verifyFirebaseIdToken, rateLimitSessionRead] },
+  async (request, reply) => {
+  if (!request.authDbUser) {
+    return reply.code(401).send({
+      error: "UNAUTHORIZED",
+      message: "Missing authenticated database user context."
+    });
+  }
+
+  const query = request.query as {
+    windowDays?: string;
+  };
+  const parsedWindowDays = Number.parseInt(query.windowDays ?? "30", 10);
+  const windowDays =
+    Number.isFinite(parsedWindowDays) && parsedWindowDays > 0
+      ? Math.min(parsedWindowDays, 180)
+      : 30;
+  const windowStartAt = new Date(
+    Date.now() - windowDays * 24 * 60 * 60 * 1000
+  );
+  const streakWindowStartAt = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000);
+
+  const [
+    snapshots,
+    sessions,
+    practiceTurns,
+    userTurnCount,
+    savedPhraseCount,
+    recentCorrections
+  ] = await Promise.all([
+    prisma.progressSnapshot.findMany({
+      where: {
+        userId: request.authDbUser.id,
+        capturedAt: {
+          gte: windowStartAt
+        }
+      },
+      orderBy: {
+        capturedAt: "desc"
+      },
+      take: 60,
+      select: {
+        id: true,
+        fluencyScore: true,
+        vocabularyScore: true,
+        consistencyScore: true,
+        streakDays: true,
+        weakAreas: true,
+        capturedAt: true
+      }
+    }),
+    prisma.session.findMany({
+      where: {
+        userId: request.authDbUser.id,
+        startedAt: {
+          gte: streakWindowStartAt
+        }
+      },
+      orderBy: {
+        startedAt: "desc"
+      },
+      take: 2000,
+      select: {
+        startedAt: true
+      }
+    }),
+    prisma.message.findMany({
+      where: {
+        role: MessageRole.USER,
+        session: {
+          userId: request.authDbUser.id
+        },
+        createdAt: {
+          gte: streakWindowStartAt
+        }
+      },
+      select: {
+        createdAt: true
+      },
+      orderBy: {
+        createdAt: "desc"
+      },
+      take: 2000
+    }),
+    prisma.message.count({
+      where: {
+        role: MessageRole.USER,
+        session: {
+          userId: request.authDbUser.id
+        },
+        createdAt: {
+          gte: windowStartAt
+        }
+      }
+    }),
+    prisma.savedPhrase.count({
+      where: {
+        userId: request.authDbUser.id,
+        createdAt: {
+          gte: windowStartAt
+        }
+      }
+    }),
+    prisma.correction.findMany({
+      where: {
+        createdAt: {
+          gte: windowStartAt
+        },
+        message: {
+          session: {
+            userId: request.authDbUser.id
+          }
+        }
+      },
+      orderBy: {
+        createdAt: "desc"
+      },
+      take: 120,
+      select: {
+        explanation: true
+      }
+    })
+  ]);
+
+  const allPracticeDayKeys = new Set<string>();
+
+  for (const session of sessions) {
+    allPracticeDayKeys.add(toUtcDayKey(session.startedAt));
+  }
+
+  for (const turn of practiceTurns) {
+    allPracticeDayKeys.add(toUtcDayKey(turn.createdAt));
+  }
+
+  const windowPracticeDayKeys = new Set<string>();
+
+  for (const session of sessions) {
+    if (session.startedAt >= windowStartAt) {
+      windowPracticeDayKeys.add(toUtcDayKey(session.startedAt));
+    }
+  }
+
+  for (const turn of practiceTurns) {
+    if (turn.createdAt >= windowStartAt) {
+      windowPracticeDayKeys.add(toUtcDayKey(turn.createdAt));
+    }
+  }
+
+  const streakDays = computeStreakDays(allPracticeDayKeys);
+  const sessionsCount = sessions.filter(
+    (session) => session.startedAt >= windowStartAt
+  ).length;
+  const latestSnapshot = snapshots[0] ?? null;
+  const snapshotWeakAreas = normalizeWeakAreas(latestSnapshot?.weakAreas);
+  const inferredWeakAreas = inferWeakAreasFromExplanations(
+    recentCorrections.map((item) => item.explanation)
+  );
+  const weakAreas =
+    snapshotWeakAreas.length > 0
+      ? snapshotWeakAreas
+      : inferredWeakAreas.length > 0
+        ? inferredWeakAreas
+        : buildFallbackWeakAreas({
+            userTurnCount,
+            savedPhraseCount,
+            sessionsCount
+          });
+  const scores = latestSnapshot
+    ? {
+        fluencyScore: clampScore(latestSnapshot.fluencyScore),
+        vocabularyScore: clampScore(latestSnapshot.vocabularyScore),
+        consistencyScore: clampScore(latestSnapshot.consistencyScore)
+      }
+    : buildFallbackScores({
+        userTurnCount,
+        savedPhraseCount,
+        sessionsCount,
+        activeDaysCount: windowPracticeDayKeys.size
+      });
+  const trendSource =
+    snapshots.length > 0
+      ? [...snapshots]
+          .reverse()
+          .slice(-14)
+          .map((item) => ({
+            capturedAt: item.capturedAt,
+            fluencyScore: clampScore(item.fluencyScore),
+            vocabularyScore: clampScore(item.vocabularyScore),
+            consistencyScore: clampScore(item.consistencyScore),
+            streakDays: item.streakDays
+          }))
+      : [
+          {
+            capturedAt: new Date(),
+            fluencyScore: scores.fluencyScore,
+            vocabularyScore: scores.vocabularyScore,
+            consistencyScore: scores.consistencyScore,
+            streakDays
+          }
+        ];
+
+  return reply.code(200).send({
+    overview: {
+      windowDays,
+      generatedAt: new Date().toISOString(),
+      source: latestSnapshot ? "snapshot+activity" : "activity-fallback",
+      streakDays,
+      lastCapturedAt: latestSnapshot?.capturedAt ?? null,
+      scores,
+      weakAreas,
+      activity: {
+        sessions: sessionsCount,
+        userTurns: userTurnCount,
+        savedPhrases: savedPhraseCount,
+        activeDays: windowPracticeDayKeys.size
+      }
+    },
+    trend: trendSource
   });
   }
 );
