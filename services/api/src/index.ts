@@ -4,7 +4,7 @@ import Fastify from "fastify";
 import type { RedisClientType } from "redis";
 
 import { prisma } from "@neontalk/db";
-import { MessageRole, Prisma, SessionStatus } from "@prisma/client";
+import { MessageRole, OutboxStatus, Prisma, SessionStatus } from "@prisma/client";
 import {
   CreateSessionSchema,
   RoleplayTurnJobSchema,
@@ -18,11 +18,13 @@ import {
   rateLimitSessionRead,
   rateLimitSessionWrite
 } from "./middleware/rate-limit";
+import { roleplayTurnPublisher } from "./lib/pubsub-publisher";
 import { hasRedisConfig, redisClient } from "./lib/redis";
 
 declare module "fastify" {
   interface FastifyInstance {
     redis: RedisClientType | null;
+    outboxPublisher: typeof roleplayTurnPublisher;
   }
 }
 
@@ -30,6 +32,7 @@ const app = Fastify({ logger: true });
 app.decorateRequest("authUser", null);
 app.decorateRequest("authDbUser", null);
 app.decorate("redis", redisClient);
+app.decorate("outboxPublisher", roleplayTurnPublisher);
 app.addHook("onClose", async (instance) => {
   if (instance.redis?.isOpen) {
     await instance.redis.quit();
@@ -40,6 +43,7 @@ const MESSAGE_IDEMPOTENCY_SCOPE = "submit_turn";
 const MESSAGE_IDEMPOTENCY_TTL_HOURS = 24;
 const ROLEPLAY_TURN_QUEUE = "roleplay-turns";
 const ROLEPLAY_TURN_OUTBOX_AGGREGATE_TYPE = "Message";
+const OUTBOX_PUBLISH_RETRY_DELAY_MS = 60_000;
 const parsedSessionTurnLockTtl = Number.parseInt(
   process.env.REDIS_SESSION_LOCK_TTL_SEC ?? "15",
   10
@@ -77,6 +81,18 @@ function buildActor(firebaseUid: string) {
   return `firebase:${firebaseUid}`;
 }
 
+function buildErrorText(error: unknown) {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message.slice(0, 1000);
+  }
+
+  if (typeof error === "string" && error.trim().length > 0) {
+    return error.slice(0, 1000);
+  }
+
+  return "Unknown publisher error.";
+}
+
 async function releaseRedisLock(
   redis: RedisClientType,
   key: string,
@@ -99,13 +115,17 @@ app.get("/health", async () => {
       : app.redis.isOpen
         ? "connected"
         : "disconnected";
+  const pubsubStatus = app.outboxPublisher.isConfigured
+    ? "configured"
+    : "disabled";
 
   return {
     status: "ok",
     service: "api",
     time: new Date().toISOString(),
     dependencies: {
-      redis: redisStatus
+      redis: redisStatus,
+      pubsub: pubsubStatus
     }
   };
 });
@@ -636,7 +656,7 @@ app.post(
       };
       outboxEvent: {
         id: string;
-        status: string;
+        status: OutboxStatus;
         nextAttemptAt: Date;
         createdAt: Date;
       };
@@ -829,6 +849,144 @@ app.post(
       });
     }
 
+    let published = false;
+    let publishMessageId: string | null = null;
+    let publishReason: string | null = null;
+    let outboxStatus = persistedTurn.outboxEvent.status;
+    let outboxNextAttemptAt = persistedTurn.outboxEvent.nextAttemptAt;
+
+    if (request.server.outboxPublisher.isConfigured) {
+      try {
+        const publishResult = await request.server.outboxPublisher.publishRoleplayTurn({
+          outboxEventId: persistedTurn.outboxEvent.id,
+          aggregateType: ROLEPLAY_TURN_OUTBOX_AGGREGATE_TYPE,
+          aggregateId: persistedTurn.message.id,
+          sessionId: persistedTurn.message.sessionId,
+          job
+        });
+
+        if (publishResult.delivered) {
+          published = true;
+          publishMessageId = publishResult.messageId;
+          outboxStatus = OutboxStatus.SENT;
+
+          await prisma.$transaction(async (tx) => {
+            await tx.outboxEvent.update({
+              where: { id: persistedTurn.outboxEvent.id },
+              data: {
+                status: OutboxStatus.SENT,
+                attempts: {
+                  increment: 1
+                },
+                errorText: null
+              }
+            });
+
+            await tx.auditLog.create({
+              data: {
+                userId: authDbUser.id,
+                actor: buildActor(authUser.uid),
+                action: "OUTBOX_EVENT_PUBLISHED",
+                entityType: "OutboxEvent",
+                entityId: persistedTurn.outboxEvent.id,
+                payload: {
+                  provider: publishResult.provider,
+                  topic: publishResult.topic,
+                  messageId: publishResult.messageId
+                }
+              }
+            });
+          });
+        } else {
+          const failedAttemptAt = new Date(Date.now() + OUTBOX_PUBLISH_RETRY_DELAY_MS);
+          publishReason = publishResult.reason ?? "PUBLISH_FAILED";
+          outboxStatus = OutboxStatus.FAILED;
+          outboxNextAttemptAt = failedAttemptAt;
+
+          await prisma.$transaction(async (tx) => {
+            await tx.outboxEvent.update({
+              where: { id: persistedTurn.outboxEvent.id },
+              data: {
+                status: OutboxStatus.FAILED,
+                attempts: {
+                  increment: 1
+                },
+                nextAttemptAt: failedAttemptAt,
+                errorText: publishReason
+              }
+            });
+
+            await tx.auditLog.create({
+              data: {
+                userId: authDbUser.id,
+                actor: buildActor(authUser.uid),
+                action: "OUTBOX_EVENT_PUBLISH_FAILED",
+                entityType: "OutboxEvent",
+                entityId: persistedTurn.outboxEvent.id,
+                payload: {
+                  provider: publishResult.provider,
+                  topic: publishResult.topic,
+                  error: publishReason
+                }
+              }
+            });
+          });
+        }
+      } catch (error) {
+        const failedAttemptAt = new Date(Date.now() + OUTBOX_PUBLISH_RETRY_DELAY_MS);
+        const errorText = buildErrorText(error);
+        publishReason = "PUBLISH_FAILED";
+        outboxStatus = OutboxStatus.FAILED;
+        outboxNextAttemptAt = failedAttemptAt;
+
+        request.log.error(
+          {
+            err: error,
+            outboxEventId: persistedTurn.outboxEvent.id
+          },
+          "Failed to publish outbox event to Pub/Sub"
+        );
+
+        await prisma.$transaction(async (tx) => {
+          await tx.outboxEvent.update({
+            where: { id: persistedTurn.outboxEvent.id },
+            data: {
+              status: OutboxStatus.FAILED,
+              attempts: {
+                increment: 1
+              },
+              nextAttemptAt: failedAttemptAt,
+              errorText: errorText
+            }
+          });
+
+          await tx.auditLog.create({
+            data: {
+              userId: authDbUser.id,
+              actor: buildActor(authUser.uid),
+              action: "OUTBOX_EVENT_PUBLISH_FAILED",
+              entityType: "OutboxEvent",
+              entityId: persistedTurn.outboxEvent.id,
+              payload: {
+                provider: request.server.outboxPublisher.provider,
+                topic: request.server.outboxPublisher.topicName,
+                error: errorText
+              }
+            }
+          });
+        });
+      }
+    } else {
+      publishReason = "PUBSUB_NOT_CONFIGURED";
+
+      request.log.warn(
+        {
+          outboxEventId: persistedTurn.outboxEvent.id
+        },
+        "Pub/Sub publisher is disabled. Outbox event remains pending."
+      );
+    }
+
     return reply.code(202).send({
       accepted: true,
       message: {
@@ -839,10 +997,16 @@ app.post(
         idempotencyKey: parsed.data.idempotencyKey
       },
       queue: ROLEPLAY_TURN_QUEUE,
+      publish: {
+        provider: request.server.outboxPublisher.provider,
+        published,
+        messageId: publishMessageId,
+        reason: publishReason
+      },
       outboxEvent: {
         id: persistedTurn.outboxEvent.id,
-        status: persistedTurn.outboxEvent.status.toLowerCase(),
-        nextAttemptAt: persistedTurn.outboxEvent.nextAttemptAt,
+        status: outboxStatus.toLowerCase(),
+        nextAttemptAt: outboxNextAttemptAt,
         createdAt: persistedTurn.outboxEvent.createdAt
       },
       job
@@ -878,6 +1042,20 @@ async function bootstrap() {
     app.log.info("Redis connected");
   } else if (!hasRedisConfig) {
     app.log.warn("REDIS_URL is not set. Redis-backed features are disabled.");
+  }
+
+  if (app.outboxPublisher.isConfigured) {
+    app.log.info(
+      {
+        provider: app.outboxPublisher.provider,
+        topic: app.outboxPublisher.topicName
+      },
+      "Outbox publisher configured"
+    );
+  } else {
+    app.log.warn(
+      "PUBSUB_ROLEPLAY_TURNS_TOPIC is not set. Pub/Sub publishing is disabled."
+    );
   }
 
   await app.listen({
