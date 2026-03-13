@@ -48,6 +48,7 @@ Run web + api + worker + postgres + redis in one command:
 Notes:
 - API container applies DB migrations and seeds scenarios at startup.
 - If `PUBSUB_ROLEPLAY_TURNS_SUBSCRIPTION` is empty, worker runs in idle mode.
+- `docker-compose` now loads root `.env` into `web`, `api`, and `ai-worker` via `env_file`.
 
 ## GitHub connection
 

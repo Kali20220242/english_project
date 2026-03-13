@@ -35,6 +35,8 @@ services:
       context: .
       dockerfile: services/api/Dockerfile
     restart: unless-stopped
+    env_file:
+      - .env
     ports:
       - "4000:4000"
     environment:
@@ -74,6 +76,8 @@ services:
         NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${NEXT_PUBLIC_FIREBASE_PROJECT_ID:-}
         NEXT_PUBLIC_FIREBASE_APP_ID: ${NEXT_PUBLIC_FIREBASE_APP_ID:-}
     restart: unless-stopped
+    env_file:
+      - .env
     ports:
       - "3000:3000"
     environment:
@@ -98,6 +102,8 @@ services:
       context: .
       dockerfile: services/ai-worker/Dockerfile
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       NODE_ENV: production
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/neontalk
