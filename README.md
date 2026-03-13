@@ -49,6 +49,7 @@ Notes:
 - API container applies DB migrations and seeds scenarios at startup.
 - If `PUBSUB_ROLEPLAY_TURNS_SUBSCRIPTION` is empty, worker runs in idle mode.
 - `docker-compose` now loads root `.env` into `web`, `api`, and `ai-worker` via `env_file`.
+- Web build reads public keys from `apps/web/.env.local` (Next.js build-time env).
 
 ## GitHub connection
 
