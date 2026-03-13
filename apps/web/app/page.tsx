@@ -1,3 +1,4 @@
+import { AuthPanel } from "../components/auth-panel";
 import { FeatureCard } from "../components/feature-card";
 
 const features = [
@@ -40,13 +41,8 @@ export default function HomePage() {
             </ul>
           </article>
           <article className="panel secondary">
-            <h2>Next implementation steps</h2>
-            <ul className="meta-list">
-              <li>Attach Firebase Auth and session guards.</li>
-              <li>Persist roleplay turns with idempotency and audit logging.</li>
-              <li>Move AI responses through a strict JSON anti-corruption layer.</li>
-              <li>Ship staged deploys through GitHub and Firebase App Hosting.</li>
-            </ul>
+            <h2>Access control</h2>
+            <AuthPanel />
           </article>
         </div>
       </section>
