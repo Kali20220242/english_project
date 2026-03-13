@@ -10,6 +10,15 @@ import { useAuth } from "./auth-provider";
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 const pollIntervalMs = 1200;
+const maxWhyItems = 6;
+const maxWhyLength = 280;
+
+type ApiMessageCorrection = {
+  originalText: string;
+  naturalText: string;
+  explanation: unknown;
+  suggestions: unknown;
+} | null;
 
 type ApiSessionMessage = {
   id: string;
@@ -18,6 +27,7 @@ type ApiSessionMessage = {
   role: "USER" | "ASSISTANT" | "SYSTEM";
   text: string;
   createdAt: string;
+  correction?: ApiMessageCorrection;
 };
 
 type SessionMessagesResponse = {
@@ -30,6 +40,10 @@ type ChatMessage = {
   role: ApiSessionMessage["role"];
   text: string;
   createdAt: string;
+  correction: {
+    naturalText: string;
+    why: string[];
+  } | null;
   optimistic?: boolean;
 };
 
@@ -67,6 +81,76 @@ function resolveApiError(payload: unknown, fallback: string) {
   return fallback;
 }
 
+function normalizeLine(input: unknown, maxLength: number) {
+  if (typeof input !== "string") {
+    return "";
+  }
+
+  return input.trim().replace(/\s+/g, " ").slice(0, maxLength);
+}
+
+function normalizeUniqueLines(input: unknown, options: {
+  maxItems: number;
+  maxLength: number;
+}) {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const output: string[] = [];
+
+  for (const item of input) {
+    const normalized = normalizeLine(item, options.maxLength);
+
+    if (!normalized) {
+      continue;
+    }
+
+    const dedupeKey = normalized.toLowerCase();
+
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+
+    seen.add(dedupeKey);
+    output.push(normalized);
+
+    if (output.length >= options.maxItems) {
+      break;
+    }
+  }
+
+  return output;
+}
+
+function normalizeCorrection(input: ApiMessageCorrection) {
+  if (!input) {
+    return null;
+  }
+
+  const naturalText = normalizeLine(input.naturalText, 2000);
+  const explanationSource =
+    input.explanation &&
+    typeof input.explanation === "object" &&
+    "why" in input.explanation
+      ? (input.explanation as { why?: unknown }).why
+      : input.explanation;
+  const why = normalizeUniqueLines(explanationSource, {
+    maxItems: maxWhyItems,
+    maxLength: maxWhyLength
+  });
+
+  if (!naturalText && why.length === 0) {
+    return null;
+  }
+
+  return {
+    naturalText,
+    why
+  };
+}
+
 function mapApiMessagesToChat(items: ApiSessionMessage[]) {
   return sortBySequence(
     items.map((item) => ({
@@ -74,7 +158,8 @@ function mapApiMessagesToChat(items: ApiSessionMessage[]) {
       seq: item.seq,
       role: item.role,
       text: item.text,
-      createdAt: item.createdAt
+      createdAt: item.createdAt,
+      correction: normalizeCorrection(item.correction ?? null)
     }))
   );
 }
@@ -86,6 +171,7 @@ function buildPendingPlaceholder(nextSeq: number): ChatMessage {
     role: "ASSISTANT",
     text: "Assistant is thinking...",
     createdAt: new Date().toISOString(),
+    correction: null,
     optimistic: true
   };
 }
@@ -282,6 +368,7 @@ export function RoleplayChat() {
           role: "USER",
           text,
           createdAt: new Date().toISOString(),
+          correction: null,
           optimistic: true
         }
       ])
@@ -411,6 +498,29 @@ export function RoleplayChat() {
                 <small>#{message.seq}</small>
               </header>
               <p>{message.text}</p>
+              {message.role === "ASSISTANT" && message.correction ? (
+                <section className="chat-rewrite" aria-label="Natural rewrite and why">
+                  {message.correction.naturalText ? (
+                    <>
+                      <p className="chat-rewrite-title">Natural rewrite</p>
+                      <p className="chat-rewrite-text">
+                        {message.correction.naturalText}
+                      </p>
+                    </>
+                  ) : null}
+
+                  {message.correction.why.length > 0 ? (
+                    <>
+                      <p className="chat-rewrite-title">Why</p>
+                      <ul className="chat-why-list">
+                        {message.correction.why.map((item) => (
+                          <li key={`${message.id}-${item}`}>{item}</li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : null}
+                </section>
+              ) : null}
             </article>
           ))
         )}
