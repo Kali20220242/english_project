@@ -7,6 +7,7 @@ import { prisma } from "@neontalk/db";
 import { MessageRole, OutboxStatus, Prisma, SessionStatus } from "@prisma/client";
 import {
   CreateSessionSchema,
+  SavePhraseSchema,
   RoleplayTurnJobSchema,
   SubmitTurnSchema
 } from "@neontalk/contracts";
@@ -52,6 +53,29 @@ const SESSION_TURN_LOCK_TTL_SECONDS =
   Number.isFinite(parsedSessionTurnLockTtl) && parsedSessionTurnLockTtl > 0
     ? parsedSessionTurnLockTtl
     : 15;
+const savedPhraseSelect = {
+  id: true,
+  phrase: true,
+  context: true,
+  mastery: true,
+  nextReviewAt: true,
+  sourceMessageId: true,
+  sessionId: true,
+  createdAt: true,
+  updatedAt: true,
+  session: {
+    select: {
+      id: true,
+      scenario: {
+        select: {
+          id: true,
+          slug: true,
+          title: true
+        }
+      }
+    }
+  }
+} as const;
 
 function buildSubmitTurnRequestHash(input: {
   sessionId: string;
@@ -91,6 +115,19 @@ function buildErrorText(error: unknown) {
   }
 
   return "Unknown publisher error.";
+}
+
+function normalizePhraseText(input: string) {
+  return input.trim().replace(/\s+/g, " ").slice(0, 120);
+}
+
+function normalizeOptionalPhraseContext(input: string | undefined) {
+  if (typeof input !== "string") {
+    return null;
+  }
+
+  const normalized = input.trim().replace(/\s+/g, " ").slice(0, 2000);
+  return normalized.length > 0 ? normalized : null;
 }
 
 async function releaseRedisLock(
@@ -442,6 +479,297 @@ app.get(
     filters: {
       status: statusFilter ?? null
     }
+  });
+  }
+);
+
+app.get(
+  "/v1/phrases",
+  { preHandler: [verifyFirebaseIdToken, rateLimitSessionRead] },
+  async (request, reply) => {
+  if (!request.authDbUser) {
+    return reply.code(401).send({
+      error: "UNAUTHORIZED",
+      message: "Missing authenticated database user context."
+    });
+  }
+
+  const query = request.query as {
+    page?: string;
+    limit?: string;
+    q?: string;
+    sessionId?: string;
+    sort?: string;
+  };
+
+  const parsedPage = Number.parseInt(query.page ?? "1", 10);
+  const parsedLimit = Number.parseInt(query.limit ?? "25", 10);
+  const page = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+  const limit =
+    Number.isFinite(parsedLimit) && parsedLimit > 0
+      ? Math.min(parsedLimit, 100)
+      : 25;
+  const phraseSearch = typeof query.q === "string" ? query.q.trim() : "";
+  const sessionIdFilter =
+    typeof query.sessionId === "string" && query.sessionId.trim().length > 0
+      ? query.sessionId.trim()
+      : null;
+  const sort = query.sort === "mastery" ? "mastery" : "recent";
+
+  if (sessionIdFilter) {
+    const session = await prisma.session.findFirst({
+      where: {
+        id: sessionIdFilter,
+        userId: request.authDbUser.id
+      },
+      select: {
+        id: true
+      }
+    });
+
+    if (!session) {
+      return reply.code(404).send({
+        error: "SESSION_NOT_FOUND",
+        message: "Session was not found for the current user."
+      });
+    }
+  }
+
+  const whereClause: Prisma.SavedPhraseWhereInput = {
+    userId: request.authDbUser.id
+  };
+
+  if (sessionIdFilter) {
+    whereClause.sessionId = sessionIdFilter;
+  }
+
+  if (phraseSearch.length > 0) {
+    whereClause.phrase = {
+      contains: phraseSearch.slice(0, 120),
+      mode: "insensitive"
+    };
+  }
+
+  const [items, total] = await Promise.all([
+    prisma.savedPhrase.findMany({
+      where: whereClause,
+      orderBy:
+        sort === "mastery"
+          ? [{ mastery: "desc" }, { updatedAt: "desc" }, { createdAt: "desc" }]
+          : [{ createdAt: "desc" }],
+      skip: (page - 1) * limit,
+      take: limit,
+      select: savedPhraseSelect
+    }),
+    prisma.savedPhrase.count({
+      where: whereClause
+    })
+  ]);
+
+  return reply.code(200).send({
+    items,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / limit))
+    },
+    filters: {
+      q: phraseSearch || null,
+      sessionId: sessionIdFilter,
+      sort
+    }
+  });
+  }
+);
+
+app.post(
+  "/v1/phrases",
+  { preHandler: [verifyFirebaseIdToken, rateLimitMessageWrite] },
+  async (request, reply) => {
+  if (!request.authUser || !request.authDbUser) {
+    return reply.code(401).send({
+      error: "UNAUTHORIZED",
+      message: "Missing authenticated Firebase user context."
+    });
+  }
+
+  const authUser = request.authUser;
+  const authDbUser = request.authDbUser;
+  const parsed = SavePhraseSchema.safeParse(request.body);
+
+  if (!parsed.success) {
+    return reply.code(400).send({
+      error: "INVALID_SAVE_PHRASE_PAYLOAD",
+      issues: parsed.error.flatten()
+    });
+  }
+
+  const phrase = normalizePhraseText(parsed.data.phrase);
+
+  if (!phrase) {
+    return reply.code(400).send({
+      error: "INVALID_PHRASE_TEXT",
+      message: "phrase must include at least one non-space character."
+    });
+  }
+
+  let resolvedSessionId =
+    typeof parsed.data.sessionId === "string" ? parsed.data.sessionId : null;
+  let resolvedSourceMessageId =
+    typeof parsed.data.sourceMessageId === "string"
+      ? parsed.data.sourceMessageId
+      : null;
+  let resolvedContext = normalizeOptionalPhraseContext(parsed.data.context);
+
+  if (resolvedSessionId) {
+    const session = await prisma.session.findFirst({
+      where: {
+        id: resolvedSessionId,
+        userId: authDbUser.id
+      },
+      select: {
+        id: true
+      }
+    });
+
+    if (!session) {
+      return reply.code(404).send({
+        error: "SESSION_NOT_FOUND",
+        message: "Session was not found for the current user."
+      });
+    }
+  }
+
+  if (resolvedSourceMessageId) {
+    const sourceMessage = await prisma.message.findFirst({
+      where: {
+        id: resolvedSourceMessageId,
+        session: {
+          userId: authDbUser.id
+        }
+      },
+      select: {
+        id: true,
+        sessionId: true,
+        role: true,
+        text: true
+      }
+    });
+
+    if (!sourceMessage) {
+      return reply.code(404).send({
+        error: "SOURCE_MESSAGE_NOT_FOUND",
+        message: "Source message was not found for the current user."
+      });
+    }
+
+    if (sourceMessage.role !== MessageRole.ASSISTANT) {
+      return reply.code(409).send({
+        error: "INVALID_SOURCE_MESSAGE_ROLE",
+        message: "Only assistant messages can be used as source for saved phrases."
+      });
+    }
+
+    if (resolvedSessionId && resolvedSessionId !== sourceMessage.sessionId) {
+      return reply.code(409).send({
+        error: "SOURCE_MESSAGE_SESSION_MISMATCH",
+        message: "sourceMessageId belongs to a different session."
+      });
+    }
+
+    resolvedSessionId = resolvedSessionId ?? sourceMessage.sessionId;
+    resolvedSourceMessageId = sourceMessage.id;
+    resolvedContext =
+      resolvedContext ?? normalizeOptionalPhraseContext(sourceMessage.text);
+  }
+
+  const existing = await prisma.savedPhrase.findFirst({
+    where: {
+      userId: authDbUser.id,
+      phrase: {
+        equals: phrase,
+        mode: "insensitive"
+      }
+    },
+    select: savedPhraseSelect
+  });
+
+  if (existing) {
+    const shouldUpdateRecord =
+      (!existing.sessionId && resolvedSessionId) ||
+      (!existing.sourceMessageId && resolvedSourceMessageId) ||
+      (!existing.context && resolvedContext);
+
+    const replayed = shouldUpdateRecord
+      ? await prisma.savedPhrase.update({
+          where: {
+            id: existing.id
+          },
+          data: {
+            sessionId: existing.sessionId ?? resolvedSessionId,
+            sourceMessageId: existing.sourceMessageId ?? resolvedSourceMessageId,
+            context: existing.context ?? resolvedContext
+          },
+          select: savedPhraseSelect
+        })
+      : existing;
+
+    await prisma.auditLog.create({
+      data: {
+        userId: authDbUser.id,
+        actor: buildActor(authUser.uid),
+        action: "SAVED_PHRASE_REPLAYED",
+        entityType: "SavedPhrase",
+        entityId: replayed.id,
+        payload: {
+          phrase: replayed.phrase,
+          updatedMetadata: shouldUpdateRecord
+        }
+      }
+    });
+
+    return reply.code(200).send({
+      saved: true,
+      replayed: true,
+      item: replayed
+    });
+  }
+
+  const created = await prisma.$transaction(async (tx) => {
+    const savedPhrase = await tx.savedPhrase.create({
+      data: {
+        userId: authDbUser.id,
+        phrase,
+        context: resolvedContext,
+        sessionId: resolvedSessionId,
+        sourceMessageId: resolvedSourceMessageId
+      },
+      select: savedPhraseSelect
+    });
+
+    await tx.auditLog.create({
+      data: {
+        userId: authDbUser.id,
+        actor: buildActor(authUser.uid),
+        action: "SAVED_PHRASE_CREATED",
+        entityType: "SavedPhrase",
+        entityId: savedPhrase.id,
+        payload: {
+          phrase: savedPhrase.phrase,
+          sessionId: savedPhrase.sessionId,
+          sourceMessageId: savedPhrase.sourceMessageId
+        }
+      }
+    });
+
+    return savedPhrase;
+  });
+
+  return reply.code(201).send({
+    saved: true,
+    replayed: false,
+    item: created
   });
   }
 );

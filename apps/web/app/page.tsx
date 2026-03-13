@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { AuthPanel } from "../components/auth-panel";
 import { FeatureCard } from "../components/feature-card";
 import { OnboardingPanel } from "../components/onboarding-panel";
@@ -74,6 +76,11 @@ export default function HomePage() {
         <article className="panel chat-card-shell">
           <h2>Roleplay Chat</h2>
           <RoleplayChat />
+          <div className="chat-actions">
+            <Link href="/phrases" className="auth-button secondary">
+              Open Phrase Vault
+            </Link>
+          </div>
         </article>
       </section>
     </main>

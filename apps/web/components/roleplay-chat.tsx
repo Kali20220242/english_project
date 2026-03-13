@@ -12,6 +12,8 @@ const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:400
 const pollIntervalMs = 1200;
 const maxWhyItems = 6;
 const maxWhyLength = 280;
+const maxSuggestedPhrases = 8;
+const maxPhraseLength = 120;
 
 type ApiMessageCorrection = {
   originalText: string;
@@ -43,6 +45,7 @@ type ChatMessage = {
   correction: {
     naturalText: string;
     why: string[];
+    suggestions: string[];
   } | null;
   optimistic?: boolean;
 };
@@ -140,15 +143,59 @@ function normalizeCorrection(input: ApiMessageCorrection) {
     maxItems: maxWhyItems,
     maxLength: maxWhyLength
   });
+  const suggestionsSource =
+    input.suggestions &&
+    typeof input.suggestions === "object" &&
+    "phrases" in input.suggestions
+      ? (input.suggestions as { phrases?: unknown }).phrases
+      : input.suggestions;
+  const suggestions = normalizeUniqueLines(suggestionsSource, {
+    maxItems: maxSuggestedPhrases,
+    maxLength: maxPhraseLength
+  });
 
-  if (!naturalText && why.length === 0) {
+  if (!naturalText && why.length === 0 && suggestions.length === 0) {
     return null;
   }
 
   return {
     naturalText,
-    why
+    why,
+    suggestions
   };
+}
+
+function buildSavedPhraseKey(messageId: string, phrase: string) {
+  return `${messageId}:${phrase.trim().toLowerCase()}`;
+}
+
+function collectSaveCandidates(message: ChatMessage) {
+  if (!message.correction) {
+    return [];
+  }
+
+  const candidates = [
+    message.correction.naturalText,
+    ...message.correction.suggestions
+  ]
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  const seen = new Set<string>();
+  const output: string[] = [];
+
+  for (const phrase of candidates) {
+    const dedupeKey = phrase.toLowerCase();
+
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+
+    seen.add(dedupeKey);
+    output.push(phrase);
+  }
+
+  return output;
 }
 
 function mapApiMessagesToChat(items: ApiSessionMessage[]) {
@@ -186,6 +233,8 @@ export function RoleplayChat() {
   const [pendingUserSeq, setPendingUserSeq] = useState<number | null>(null);
   const [statusKind, setStatusKind] = useState<"idle" | "ok" | "error">("idle");
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [savingPhraseKey, setSavingPhraseKey] = useState<string | null>(null);
+  const [savedPhraseKeys, setSavedPhraseKeys] = useState<string[]>([]);
 
   function refreshActiveSession() {
     setActiveSession(loadActiveSessionState());
@@ -194,6 +243,10 @@ export function RoleplayChat() {
   useEffect(() => {
     refreshActiveSession();
   }, []);
+
+  useEffect(() => {
+    setSavedPhraseKeys([]);
+  }, [activeSession?.sessionId]);
 
   async function fetchSessionMessages(input: {
     sessionId: string;
@@ -433,6 +486,91 @@ export function RoleplayChat() {
     }
   }
 
+  async function savePhrase(input: { message: ChatMessage; phrase: string }) {
+    if (!activeSession?.sessionId) {
+      setStatusKind("error");
+      setStatusMessage("Start a scenario session first.");
+      return;
+    }
+
+    if (!user) {
+      setStatusKind("error");
+      setStatusMessage("Sign in first to save phrases.");
+      return;
+    }
+
+    const phrase = input.phrase.trim();
+
+    if (!phrase) {
+      setStatusKind("error");
+      setStatusMessage("Phrase text is empty.");
+      return;
+    }
+
+    const phraseKey = buildSavedPhraseKey(input.message.id, phrase);
+
+    if (savedPhraseKeys.includes(phraseKey)) {
+      setStatusKind("ok");
+      setStatusMessage("Phrase already saved in this chat.");
+      return;
+    }
+
+    const token = await getIdToken();
+
+    if (!token) {
+      setStatusKind("error");
+      setStatusMessage("Could not get Firebase ID token.");
+      return;
+    }
+
+    setSavingPhraseKey(phraseKey);
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/v1/phrases`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          phrase,
+          context: input.message.correction?.naturalText || input.message.text,
+          sessionId: activeSession.sessionId,
+          sourceMessageId: input.message.id
+        })
+      });
+
+      let payload: unknown = null;
+
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+
+      if (!response.ok) {
+        setStatusKind("error");
+        setStatusMessage(
+          resolveApiError(payload, `Failed to save phrase (${response.status}).`)
+        );
+        return;
+      }
+
+      setSavedPhraseKeys((previous) =>
+        previous.includes(phraseKey) ? previous : [...previous, phraseKey]
+      );
+      setStatusKind("ok");
+      setStatusMessage("Phrase saved to Phrase Vault.");
+    } catch (error) {
+      setStatusKind("error");
+      setStatusMessage(
+        error instanceof Error ? error.message : "Network error while saving phrase."
+      );
+    } finally {
+      setSavingPhraseKey(null);
+    }
+  }
+
   const showPendingAssistant =
     pendingUserSeq !== null &&
     !messages.some(
@@ -517,6 +655,37 @@ export function RoleplayChat() {
                           <li key={`${message.id}-${item}`}>{item}</li>
                         ))}
                       </ul>
+                    </>
+                  ) : null}
+
+                  {collectSaveCandidates(message).length > 0 ? (
+                    <>
+                      <p className="chat-rewrite-title">Save phrase</p>
+                      <div className="chat-save-phrase-grid">
+                        {collectSaveCandidates(message).map((phrase) => {
+                          const phraseKey = buildSavedPhraseKey(message.id, phrase);
+                          const isSaving = savingPhraseKey === phraseKey;
+                          const isSaved = savedPhraseKeys.includes(phraseKey);
+
+                          return (
+                            <button
+                              key={phraseKey}
+                              type="button"
+                              className={`chat-save-phrase${isSaved ? " saved" : ""}`}
+                              onClick={() => {
+                                void savePhrase({
+                                  message,
+                                  phrase
+                                });
+                              }}
+                              disabled={isSaving || isSaved}
+                            >
+                              <strong>{isSaved ? "Saved" : isSaving ? "Saving..." : "Save"}</strong>{" "}
+                              <span>{phrase}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
                     </>
                   ) : null}
                 </section>

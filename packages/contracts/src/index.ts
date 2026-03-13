@@ -28,6 +28,13 @@ export const SubmitTurnSchema = z.object({
   clientTs: z.string().datetime()
 });
 
+export const SavePhraseSchema = z.object({
+  phrase: z.string().min(1).max(120),
+  context: z.string().max(2000).optional(),
+  sessionId: z.string().min(3).optional(),
+  sourceMessageId: z.string().min(3).optional()
+});
+
 export const RoleplayTurnJobSchema = z.object({
   jobId: z.string().min(3),
   type: z.literal("ROLEPLAY_TURN"),
@@ -60,5 +67,6 @@ export const RoleplayTurnResultSchema = z.object({
 
 export type CreateSessionInput = z.infer<typeof CreateSessionSchema>;
 export type SubmitTurnInput = z.infer<typeof SubmitTurnSchema>;
+export type SavePhraseInput = z.infer<typeof SavePhraseSchema>;
 export type RoleplayTurnJob = z.infer<typeof RoleplayTurnJobSchema>;
 export type RoleplayTurnResult = z.infer<typeof RoleplayTurnResultSchema>;
