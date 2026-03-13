@@ -1,0 +1,10 @@
+.git
+.gitignore
+node_modules
+**/node_modules
+**/.next
+**/dist
+**/coverage
+*.log
+npm-debug.log*
+docker-compose*.override.yml

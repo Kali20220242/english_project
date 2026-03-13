@@ -31,6 +31,24 @@ Monorepo for an AI English roleplay platform with a Firebase-hosted web app, a d
    - `npm run dev:api`
    - `npm run dev:worker`
 
+## Docker full stack
+
+Run web + api + worker + postgres + redis in one command:
+
+1. Ensure `.env` contains Firebase values and public web keys.
+2. Build and start everything:
+   - `docker compose up --build -d`
+3. Check status:
+   - `docker compose ps`
+   - `docker compose logs -f api`
+4. Open:
+   - Web: `http://localhost:3000`
+   - API health: `http://localhost:4000/health`
+
+Notes:
+- API container applies DB migrations and seeds scenarios at startup.
+- If `PUBSUB_ROLEPLAY_TURNS_SUBSCRIPTION` is empty, worker runs in idle mode.
+
 ## GitHub connection
 
 The repository is initialized locally. To bind it to GitHub:

@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@fastify/cors": "^11.1.0",
     "@google-cloud/pubsub": "^5.2.0",
     "@neontalk/contracts": "file:../../packages/contracts",
     "@neontalk/db": "file:../../packages/db",

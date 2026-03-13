@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import Fastify from "fastify";
+import cors from "@fastify/cors";
 import type { RedisClientType } from "redis";
 
 import { prisma } from "@neontalk/db";
@@ -53,6 +54,12 @@ const SESSION_TURN_LOCK_TTL_SECONDS =
   Number.isFinite(parsedSessionTurnLockTtl) && parsedSessionTurnLockTtl > 0
     ? parsedSessionTurnLockTtl
     : 15;
+const allowedCorsOrigins = (
+  process.env.API_CORS_ORIGIN ?? "http://localhost:3000"
+)
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 const savedPhraseSelect = {
   id: true,
   phrase: true,
@@ -76,6 +83,25 @@ const savedPhraseSelect = {
     }
   }
 } as const;
+
+function isCorsOriginAllowed(origin: string | undefined) {
+  if (!origin) {
+    return true;
+  }
+
+  if (allowedCorsOrigins.includes("*")) {
+    return true;
+  }
+
+  return allowedCorsOrigins.includes(origin);
+}
+
+app.register(cors, {
+  credentials: true,
+  origin(origin, callback) {
+    callback(null, isCorsOriginAllowed(origin));
+  }
+});
 
 function buildSubmitTurnRequestHash(input: {
   sessionId: string;

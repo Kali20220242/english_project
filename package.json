@@ -15,7 +15,8 @@
     "build": "npm run build -w @neontalk/contracts && npm run build -w @neontalk/db && npm run build -w @neontalk/api && npm run build -w @neontalk/ai-worker && npm run build -w @neontalk/web",
     "typecheck": "npm run typecheck -w @neontalk/contracts && npm run typecheck -w @neontalk/db && npm run typecheck -w @neontalk/api && npm run typecheck -w @neontalk/ai-worker && npm run typecheck -w @neontalk/web",
     "db:generate": "npm run db:generate -w @neontalk/db",
-    "db:migrate": "npm run db:migrate -w @neontalk/db"
+    "db:migrate": "npm run db:migrate -w @neontalk/db",
+    "db:deploy": "npm run db:deploy -w @neontalk/db"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
