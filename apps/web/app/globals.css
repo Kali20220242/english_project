@@ -191,6 +191,12 @@ a {
   border-color: rgba(97, 247, 207, 0.75);
 }
 
+.auth-button:disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+  transform: none;
+}
+
 .auth-button.secondary {
   border-color: rgba(255, 179, 107, 0.45);
   background: linear-gradient(120deg, rgba(255, 179, 107, 0.2), rgba(255, 142, 63, 0.32));
@@ -219,10 +225,358 @@ a {
   letter-spacing: 0.12em;
 }
 
+.onboarding-shell {
+  margin-top: 20px;
+}
+
+.onboarding-card {
+  grid-column: 1 / -1;
+}
+
+.onboarding-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.onboarding-copy {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.onboarding-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.onboarding-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.onboarding-field span {
+  font-size: 0.84rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.onboarding-field input,
+.onboarding-field select {
+  width: 100%;
+  border: 1px solid rgba(97, 247, 207, 0.3);
+  border-radius: 10px;
+  background: rgba(7, 20, 30, 0.72);
+  color: var(--text);
+  padding: 10px 11px;
+  font: inherit;
+}
+
+.onboarding-field input:focus,
+.onboarding-field select:focus {
+  outline: 2px solid rgba(97, 247, 207, 0.35);
+  outline-offset: 1px;
+}
+
+.goal-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.goal-picker p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.goal-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.goal-chip {
+  border: 1px solid rgba(97, 247, 207, 0.25);
+  border-radius: 999px;
+  background: rgba(12, 28, 41, 0.78);
+  color: var(--text);
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.goal-chip.active {
+  border-color: rgba(97, 247, 207, 0.75);
+  background: rgba(97, 247, 207, 0.2);
+}
+
+.onboarding-status {
+  margin: 0;
+  color: var(--muted);
+}
+
+.onboarding-status.ok {
+  color: var(--accent);
+}
+
+.onboarding-status.error {
+  color: #ff9c8f;
+}
+
+.scenario-shell {
+  margin-top: 20px;
+}
+
+.scenario-card-shell {
+  grid-column: 1 / -1;
+}
+
+.scenario-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.scenario-copy {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.scenario-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.scenario-card {
+  text-align: left;
+  border: 1px solid rgba(97, 247, 207, 0.22);
+  border-radius: 16px;
+  background: rgba(8, 21, 32, 0.78);
+  color: inherit;
+  padding: 14px;
+  cursor: pointer;
+}
+
+.scenario-card.active {
+  border-color: rgba(97, 247, 207, 0.78);
+  background: linear-gradient(170deg, rgba(97, 247, 207, 0.19), rgba(9, 27, 39, 0.9));
+}
+
+.scenario-card span {
+  display: inline-block;
+  color: var(--accent-warm);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.76rem;
+}
+
+.scenario-card h3 {
+  margin: 8px 0 6px;
+  font-size: 1rem;
+}
+
+.scenario-card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.scenario-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  color: #c7efe3;
+}
+
+.scenario-onboarding {
+  border: 1px solid rgba(97, 247, 207, 0.22);
+  border-radius: 14px;
+  background: rgba(8, 21, 32, 0.74);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scenario-onboarding p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.scenario-status {
+  margin: 0;
+  color: var(--muted);
+}
+
+.scenario-status.ok {
+  color: var(--accent);
+}
+
+.scenario-status.error {
+  color: #ff9c8f;
+}
+
+.scenario-session {
+  margin: 0;
+  color: #c7efe3;
+}
+
+.chat-shell {
+  margin-top: 20px;
+}
+
+.chat-card-shell {
+  grid-column: 1 / -1;
+}
+
+.chat-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chat-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.chat-meta p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.chat-window {
+  border: 1px solid rgba(97, 247, 207, 0.22);
+  border-radius: 16px;
+  background: rgba(7, 18, 28, 0.78);
+  padding: 12px;
+  min-height: 240px;
+  max-height: 460px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+.chat-bubble {
+  border: 1px solid rgba(97, 247, 207, 0.16);
+  border-radius: 14px;
+  background: rgba(10, 24, 36, 0.82);
+  padding: 10px;
+}
+
+.chat-bubble.user {
+  border-color: rgba(97, 247, 207, 0.44);
+  background: rgba(17, 40, 54, 0.92);
+  align-self: flex-end;
+  width: min(88%, 680px);
+}
+
+.chat-bubble.assistant {
+  border-color: rgba(255, 179, 107, 0.35);
+  background: rgba(28, 22, 14, 0.55);
+  align-self: flex-start;
+  width: min(88%, 680px);
+}
+
+.chat-bubble.pending {
+  opacity: 0.74;
+}
+
+.chat-bubble header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-bubble header span {
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent-warm);
+}
+
+.chat-bubble header small {
+  color: var(--muted);
+}
+
+.chat-bubble p {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  color: var(--text);
+  line-height: 1.55;
+}
+
+.chat-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-compose textarea {
+  width: 100%;
+  border: 1px solid rgba(97, 247, 207, 0.3);
+  border-radius: 12px;
+  background: rgba(7, 20, 30, 0.72);
+  color: var(--text);
+  padding: 10px 11px;
+  font: inherit;
+  resize: vertical;
+}
+
+.chat-compose textarea:focus {
+  outline: 2px solid rgba(97, 247, 207, 0.35);
+  outline-offset: 1px;
+}
+
+.chat-status {
+  margin: 0;
+  color: var(--muted);
+}
+
+.chat-status.ok {
+  color: var(--accent);
+}
+
+.chat-status.error {
+  color: #ff9c8f;
+}
+
 @media (max-width: 900px) {
   .panel,
   .panel.secondary,
   .feature-card {
     grid-column: 1 / -1;
+  }
+
+  .onboarding-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .scenario-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .chat-bubble.user,
+  .chat-bubble.assistant {
+    width: 100%;
   }
 }

@@ -243,6 +243,110 @@ app.get(
 );
 
 app.get(
+  "/v1/sessions/:id/messages",
+  { preHandler: [verifyFirebaseIdToken, rateLimitSessionRead] },
+  async (request, reply) => {
+  if (!request.authDbUser) {
+    return reply.code(401).send({
+      error: "UNAUTHORIZED",
+      message: "Missing authenticated database user context."
+    });
+  }
+
+  const { id } = request.params as { id?: string };
+
+  if (!id) {
+    return reply.code(400).send({
+      error: "INVALID_SESSION_ID",
+      message: "Session id is required."
+    });
+  }
+
+  const query = request.query as {
+    limit?: string;
+    sinceSeq?: string;
+  };
+  const parsedLimit = Number.parseInt(query.limit ?? "200", 10);
+  const limit =
+    Number.isFinite(parsedLimit) && parsedLimit > 0
+      ? Math.min(parsedLimit, 500)
+      : 200;
+  const parsedSinceSeq = Number.parseInt(query.sinceSeq ?? "0", 10);
+  const sinceSeq =
+    Number.isFinite(parsedSinceSeq) && parsedSinceSeq >= 0
+      ? parsedSinceSeq
+      : 0;
+
+  const session = await prisma.session.findFirst({
+    where: {
+      id,
+      userId: request.authDbUser.id
+    },
+    select: {
+      id: true,
+      status: true,
+      contextVersion: true
+    }
+  });
+
+  if (!session) {
+    return reply.code(404).send({
+      error: "SESSION_NOT_FOUND",
+      message: "Session was not found for the current user."
+    });
+  }
+
+  const items = await prisma.message.findMany({
+    where: {
+      sessionId: id,
+      seq: {
+        gt: sinceSeq
+      }
+    },
+    orderBy: {
+      seq: "asc"
+    },
+    take: limit,
+    select: {
+      id: true,
+      sessionId: true,
+      seq: true,
+      role: true,
+      text: true,
+      payloadHash: true,
+      metadata: true,
+      createdAt: true,
+      correction: {
+        select: {
+          originalText: true,
+          naturalText: true,
+          explanation: true,
+          suggestions: true
+        }
+      }
+    }
+  });
+
+  const nextSinceSeq = items.at(-1)?.seq ?? sinceSeq;
+
+  return reply.code(200).send({
+    session: {
+      id: session.id,
+      status: session.status,
+      contextVersion: session.contextVersion
+    },
+    items,
+    cursor: {
+      sinceSeq,
+      nextSinceSeq,
+      limit,
+      hasMore: items.length === limit
+    }
+  });
+  }
+);
+
+app.get(
   "/v1/sessions",
   { preHandler: [verifyFirebaseIdToken, rateLimitSessionRead] },
   async (request, reply) => {

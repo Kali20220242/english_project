@@ -1,6 +1,6 @@
 import { PubSub, type Message, type Subscription } from "@google-cloud/pubsub";
 
-import { RoleplayTurnJobSchema } from "@neontalk/contracts";
+import { RoleplayTurnJobSchema, type RoleplayTurnJob } from "@neontalk/contracts";
 import { prisma } from "@neontalk/db";
 import {
   AntiCorruptionMapperError,
@@ -32,6 +32,16 @@ const heartbeatMs =
   Number.isFinite(parsedHeartbeatMs) && parsedHeartbeatMs > 0
     ? parsedHeartbeatMs
     : 30000;
+const parsedMaxRetries = Number.parseInt(
+  process.env.WORKER_MAX_RETRIES ?? "5",
+  10
+);
+const maxRetries =
+  Number.isFinite(parsedMaxRetries) && parsedMaxRetries > 0
+    ? parsedMaxRetries
+    : 5;
+const dlqStream = process.env.WORKER_DLQ_STREAM?.trim() || "worker.dlq";
+const rawPayloadPreviewLength = 2000;
 const rawModelOutputPreviewLength = 2000;
 
 const pubsubClient = roleplayTurnsSubscriptionName
@@ -42,6 +52,8 @@ let roleplayTurnsSubscription: Subscription | null = null;
 let processedCount = 0;
 let malformedCount = 0;
 let failedCount = 0;
+let retriedCount = 0;
+let dlqCount = 0;
 let adapterFailureCount = 0;
 let mapperFailureCount = 0;
 let persistenceFailureCount = 0;
@@ -49,17 +61,178 @@ let shuttingDown = false;
 
 const bootAt = new Date();
 
-function parseMessageData(message: Message) {
+type ParsedMessageData =
+  | {
+      ok: true;
+      payload: unknown;
+      payloadText: string;
+    }
+  | {
+      ok: false;
+      payloadText: string;
+      error: string;
+    };
+
+function parseMessageData(message: Message): ParsedMessageData {
+  const payloadText = message.data.toString("utf8");
+
   try {
     return {
-      ok: true as const,
-      payload: JSON.parse(message.data.toString("utf8"))
+      ok: true,
+      payload: JSON.parse(payloadText),
+      payloadText
     };
   } catch (error) {
     return {
-      ok: false as const,
+      ok: false,
+      payloadText,
       error: error instanceof Error ? error.message : "Invalid JSON payload."
     };
+  }
+}
+
+function getDeliveryAttempt(message: Message) {
+  const attempt = (
+    message as Message & {
+      deliveryAttempt?: number;
+    }
+  ).deliveryAttempt;
+
+  return typeof attempt === "number" && attempt > 0 ? attempt : 1;
+}
+
+function resolveWorkerErrorCode(error: unknown) {
+  if (
+    error instanceof AiAdapterError ||
+    error instanceof AntiCorruptionMapperError ||
+    error instanceof PersistDomainTurnError
+  ) {
+    return error.code;
+  }
+
+  if (error instanceof Error && error.name) {
+    return error.name;
+  }
+
+  return "UNKNOWN_ERROR";
+}
+
+function resolveWorkerErrorDetails(error: unknown) {
+  if (
+    error instanceof AiAdapterError ||
+    error instanceof AntiCorruptionMapperError ||
+    error instanceof PersistDomainTurnError
+  ) {
+    return error.details ?? null;
+  }
+
+  return null;
+}
+
+function isRetryableProcessingError(error: unknown) {
+  if (error instanceof AntiCorruptionMapperError) {
+    return false;
+  }
+
+  if (error instanceof PersistDomainTurnError) {
+    return error.code === "SOURCE_USER_MESSAGE_NOT_FOUND";
+  }
+
+  if (error instanceof AiAdapterError) {
+    return error.code !== "INVALID_RESULT_CONTEXT";
+  }
+
+  return true;
+}
+
+function buildDlqStreamId(input: {
+  message: Message;
+  job: RoleplayTurnJob | null;
+}) {
+  if (input.job?.sessionId) {
+    return input.job.sessionId;
+  }
+
+  if (input.message.attributes.outboxEventId) {
+    return input.message.attributes.outboxEventId;
+  }
+
+  if (input.message.attributes.aggregateId) {
+    return input.message.attributes.aggregateId;
+  }
+
+  return input.message.id;
+}
+
+function buildErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  if (typeof error === "string" && error.trim().length > 0) {
+    return error;
+  }
+
+  return "Unexpected worker error.";
+}
+
+async function writeDlqEvent(input: {
+  message: Message;
+  job: RoleplayTurnJob | null;
+  payloadText: string;
+  reason: string;
+  error: unknown;
+  retryable: boolean;
+  deliveryAttempt: number;
+}) {
+  const errorCode = resolveWorkerErrorCode(input.error);
+  const errorDetails = resolveWorkerErrorDetails(input.error);
+  const errorMessage = buildErrorMessage(input.error);
+
+  try {
+    await prisma.eventLog.create({
+      data: {
+        stream: dlqStream,
+        streamId: buildDlqStreamId({
+          message: input.message,
+          job: input.job
+        }),
+        eventType: "ROLEPLAY_TURN_DLQ",
+        payload: {
+          reason: input.reason,
+          retryable: input.retryable,
+          deliveryAttempt: input.deliveryAttempt,
+          maxRetries,
+          error: {
+            code: errorCode,
+            message: errorMessage,
+            details: errorDetails
+          },
+          message: {
+            id: input.message.id,
+            outboxEventId: input.message.attributes.outboxEventId ?? null,
+            aggregateId: input.message.attributes.aggregateId ?? null,
+            aggregateType: input.message.attributes.aggregateType ?? null,
+            type: input.message.attributes.type ?? null,
+            publishTime: input.message.publishTime
+              ? input.message.publishTime.toISOString()
+              : null
+          },
+          job: input.job,
+          payloadPreview: input.payloadText.slice(0, rawPayloadPreviewLength)
+        }
+      }
+    });
+  } catch (dlqError) {
+    console.error(
+      JSON.stringify({
+        service: "ai-worker",
+        event: "worker.dlq.persist_failed",
+        messageId: input.message.id,
+        reason: input.reason,
+        error: dlqError instanceof Error ? dlqError.message : String(dlqError)
+      })
+    );
   }
 }
 
@@ -70,12 +243,16 @@ function logHeartbeat(state: string) {
       state,
       subscription: roleplayTurnsSubscriptionName || null,
       maxInFlight,
+      maxRetries,
+      dlqStream,
       bootAt: bootAt.toISOString(),
       heartbeatAt: new Date().toISOString(),
       counters: {
         processed: processedCount,
         malformed: malformedCount,
         failed: failedCount,
+        retried: retriedCount,
+        dlq: dlqCount,
         adapterFailures: adapterFailureCount,
         mapperFailures: mapperFailureCount,
         persistenceFailures: persistenceFailureCount
@@ -84,23 +261,63 @@ function logHeartbeat(state: string) {
   );
 }
 
+async function moveMessageToDlq(input: {
+  message: Message;
+  job: RoleplayTurnJob | null;
+  payloadText: string;
+  reason: string;
+  error: unknown;
+  retryable: boolean;
+  deliveryAttempt: number;
+}) {
+  dlqCount += 1;
+
+  await writeDlqEvent({
+    message: input.message,
+    job: input.job,
+    payloadText: input.payloadText,
+    reason: input.reason,
+    error: input.error,
+    retryable: input.retryable,
+    deliveryAttempt: input.deliveryAttempt
+  });
+
+  console.error(
+    JSON.stringify({
+      service: "ai-worker",
+      event: "worker.message.dlq",
+      messageId: input.message.id,
+      outboxEventId: input.message.attributes.outboxEventId ?? null,
+      sessionId: input.job?.sessionId ?? null,
+      reason: input.reason,
+      retryable: input.retryable,
+      deliveryAttempt: input.deliveryAttempt,
+      maxRetries,
+      error: buildErrorMessage(input.error),
+      code: resolveWorkerErrorCode(input.error)
+    })
+  );
+
+  input.message.ack();
+}
+
 async function handleRoleplayTurnMessage(message: Message) {
+  const deliveryAttempt = getDeliveryAttempt(message);
   const parsedPayload = parseMessageData(message);
 
   if (!parsedPayload.ok) {
     malformedCount += 1;
 
-    console.error(
-      JSON.stringify({
-        service: "ai-worker",
-        event: "worker.message.invalid_json",
-        messageId: message.id,
-        outboxEventId: message.attributes.outboxEventId ?? null,
-        error: parsedPayload.error
-      })
-    );
+    await moveMessageToDlq({
+      message,
+      job: null,
+      payloadText: parsedPayload.payloadText,
+      reason: "INVALID_JSON_PAYLOAD",
+      error: new Error(parsedPayload.error),
+      retryable: false,
+      deliveryAttempt
+    });
 
-    message.ack();
     return;
   }
 
@@ -109,17 +326,16 @@ async function handleRoleplayTurnMessage(message: Message) {
   if (!parsedJob.success) {
     malformedCount += 1;
 
-    console.error(
-      JSON.stringify({
-        service: "ai-worker",
-        event: "worker.message.invalid_contract",
-        messageId: message.id,
-        outboxEventId: message.attributes.outboxEventId ?? null,
-        issues: parsedJob.error.issues
-      })
-    );
+    await moveMessageToDlq({
+      message,
+      job: null,
+      payloadText: parsedPayload.payloadText,
+      reason: "INVALID_JOB_CONTRACT",
+      error: parsedJob.error,
+      retryable: false,
+      deliveryAttempt
+    });
 
-    message.ack();
     return;
   }
 
@@ -181,7 +397,8 @@ async function handleRoleplayTurnMessage(message: Message) {
         model: aiOutput.model,
         replayed: persistedTurn.replayed,
         assistantMessageId: persistedTurn.assistantMessageId,
-        savedPhraseCount: persistedTurn.savedPhraseCount
+        savedPhraseCount: persistedTurn.savedPhraseCount,
+        deliveryAttempt
       })
     );
 
@@ -198,19 +415,37 @@ async function handleRoleplayTurnMessage(message: Message) {
       persistenceFailureCount += 1;
     }
 
+    const retryable = isRetryableProcessingError(error);
+    const reachedRetryLimit = deliveryAttempt >= maxRetries;
+
+    if (!retryable || reachedRetryLimit) {
+      await moveMessageToDlq({
+        message,
+        job: parsedJob.data,
+        payloadText: parsedPayload.payloadText,
+        reason: !retryable ? "NON_RETRYABLE_ERROR" : "MAX_RETRIES_EXCEEDED",
+        error,
+        retryable,
+        deliveryAttempt
+      });
+
+      return;
+    }
+
+    retriedCount += 1;
+
     console.error(
       JSON.stringify({
         service: "ai-worker",
         event: "worker.message.retry",
         messageId: message.id,
         outboxEventId: message.attributes.outboxEventId ?? null,
-        error: error instanceof Error ? error.message : "Unexpected worker error.",
-        code:
-          error instanceof AiAdapterError ||
-          error instanceof AntiCorruptionMapperError ||
-          error instanceof PersistDomainTurnError
-            ? error.code
-            : null
+        sessionId: parsedJob.data.sessionId,
+        error: buildErrorMessage(error),
+        code: resolveWorkerErrorCode(error),
+        deliveryAttempt,
+        nextAttempt: deliveryAttempt + 1,
+        maxRetries
       })
     );
 
@@ -262,7 +497,9 @@ async function bootstrap() {
       provider: "pubsub",
       subscription: roleplayTurnsSubscriptionName,
       projectId: projectId ?? null,
-      maxInFlight
+      maxInFlight,
+      maxRetries,
+      dlqStream
     })
   );
 
@@ -286,6 +523,8 @@ async function shutdown(signal: NodeJS.Signals) {
       processedCount,
       malformedCount,
       failedCount,
+      retriedCount,
+      dlqCount,
       adapterFailureCount,
       mapperFailureCount,
       persistenceFailureCount

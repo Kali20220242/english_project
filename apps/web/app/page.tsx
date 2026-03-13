@@ -1,5 +1,8 @@
 import { AuthPanel } from "../components/auth-panel";
 import { FeatureCard } from "../components/feature-card";
+import { OnboardingPanel } from "../components/onboarding-panel";
+import { RoleplayChat } from "../components/roleplay-chat";
+import { ScenarioPicker } from "../components/scenario-picker";
 
 const features = [
   {
@@ -51,6 +54,27 @@ export default function HomePage() {
         {features.map((feature) => (
           <FeatureCard key={feature.title} {...feature} />
         ))}
+      </section>
+
+      <section className="onboarding-shell">
+        <article className="panel onboarding-card">
+          <h2>Onboarding</h2>
+          <OnboardingPanel />
+        </article>
+      </section>
+
+      <section className="scenario-shell">
+        <article className="panel scenario-card-shell">
+          <h2>Scenario Picker</h2>
+          <ScenarioPicker />
+        </article>
+      </section>
+
+      <section className="chat-shell">
+        <article className="panel chat-card-shell">
+          <h2>Roleplay Chat</h2>
+          <RoleplayChat />
+        </article>
       </section>
     </main>
   );
