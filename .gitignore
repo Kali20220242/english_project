@@ -14,6 +14,7 @@ npm-debug.log*
 apps/web/.env.local
 services/api/.env
 services/ai-worker/.env
+plan.md
 packages/db/dev.db
 packages/db/dev.db-journal
 postgres-data
