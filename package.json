@@ -1,0 +1,25 @@
+{
+  "name": "neontalk-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "npm@11.10.1",
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev -w @neontalk/web",
+    "dev:api": "npm run dev -w @neontalk/api",
+    "dev:worker": "npm run dev -w @neontalk/ai-worker",
+    "build": "npm run build -w @neontalk/contracts && npm run build -w @neontalk/db && npm run build -w @neontalk/api && npm run build -w @neontalk/ai-worker && npm run build -w @neontalk/web",
+    "typecheck": "npm run typecheck -w @neontalk/contracts && npm run typecheck -w @neontalk/db && npm run typecheck -w @neontalk/api && npm run typecheck -w @neontalk/ai-worker && npm run typecheck -w @neontalk/web",
+    "db:generate": "npm run db:generate -w @neontalk/db",
+    "db:migrate": "npm run db:migrate -w @neontalk/db"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

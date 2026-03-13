@@ -1,0 +1,17 @@
+{
+  "name": "@neontalk/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@neontalk/contracts": "file:../../packages/contracts",
+    "@neontalk/db": "file:../../packages/db",
+    "fastify": "^5.8.2"
+  }
+}

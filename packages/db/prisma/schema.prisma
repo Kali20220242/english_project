@@ -1,0 +1,219 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum EnglishLevel {
+  A1
+  A2
+  B1
+  B2
+  C1
+  C2
+}
+
+enum SessionStatus {
+  ACTIVE
+  COMPLETED
+  ARCHIVED
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum OutboxStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+}
+
+model User {
+  id                String             @id @default(cuid())
+  email             String             @unique
+  firebaseUid       String?            @unique
+  profile           Profile?
+  sessions          Session[]
+  savedPhrases      SavedPhrase[]
+  progressSnapshots ProgressSnapshot[]
+  idempotencyKeys   IdempotencyKey[]
+  auditLogs         AuditLog[]
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+}
+
+model Profile {
+  userId          String       @id
+  level           EnglishLevel
+  nativeLanguage  String
+  targetLanguage  String       @default("en")
+  goals           Json?
+  personaStyle    String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Scenario {
+  id           String       @id
+  slug         String       @unique
+  title        String
+  theme        String
+  difficulty   EnglishLevel
+  description  String
+  systemPrompt String
+  isActive     Boolean      @default(true)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  sessions     Session[]
+}
+
+model Session {
+  id                String             @id @default(cuid())
+  userId            String
+  scenarioId        String
+  status            SessionStatus      @default(ACTIVE)
+  contextVersion    Int                @default(1)
+  startedAt         DateTime           @default(now())
+  finishedAt        DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scenario          Scenario           @relation(fields: [scenarioId], references: [id], onDelete: Restrict)
+  messages          Message[]
+  outboxEvents      OutboxEvent[]
+  progressSnapshots ProgressSnapshot[]
+  savedPhrases      SavedPhrase[]
+
+  @@index([userId, startedAt])
+  @@index([scenarioId, startedAt])
+}
+
+model Message {
+  id          String      @id @default(cuid())
+  sessionId   String
+  seq         Int
+  role        MessageRole
+  text        String
+  metadata    Json?
+  payloadHash String?
+  createdAt   DateTime    @default(now())
+  session     Session     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  correction  Correction?
+  eventLogs   EventLog[]
+
+  @@unique([sessionId, seq])
+  @@index([sessionId, createdAt])
+}
+
+model Correction {
+  id           String    @id @default(cuid())
+  messageId    String    @unique
+  originalText String
+  naturalText  String
+  explanation  Json
+  suggestions  Json?
+  createdAt    DateTime  @default(now())
+  message      Message   @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+model SavedPhrase {
+  id              String    @id @default(cuid())
+  userId          String
+  sessionId       String?
+  phrase          String
+  context         String?
+  sourceMessageId String?
+  mastery         Int       @default(0)
+  nextReviewAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session         Session?  @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([userId, mastery])
+  @@index([userId, phrase])
+}
+
+model ProgressSnapshot {
+  id              String    @id @default(cuid())
+  userId          String
+  sessionId       String?
+  fluencyScore    Int
+  vocabularyScore Int
+  consistencyScore Int
+  streakDays      Int
+  weakAreas       Json?
+  capturedAt      DateTime  @default(now())
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session         Session?  @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([userId, capturedAt])
+}
+
+model IdempotencyKey {
+  id          String    @id @default(cuid())
+  userId      String
+  scope       String
+  key         String
+  requestHash String
+  responseRef String?
+  expiresAt   DateTime
+  createdAt   DateTime  @default(now())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, scope, key])
+  @@index([expiresAt])
+}
+
+model AuditLog {
+  id         String    @id @default(cuid())
+  userId     String?
+  actor      String
+  action     String
+  entityType String
+  entityId   String
+  payload    Json?
+  createdAt  DateTime  @default(now())
+  user       User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model EventLog {
+  id         String    @id @default(cuid())
+  messageId  String?
+  stream     String
+  streamId   String
+  eventType  String
+  payload    Json
+  occurredAt DateTime  @default(now())
+  message    Message?  @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([stream, streamId, occurredAt])
+}
+
+model OutboxEvent {
+  id           String       @id @default(cuid())
+  sessionId    String?
+  topic        String
+  aggregateType String
+  aggregateId  String
+  payload      Json
+  status       OutboxStatus @default(PENDING)
+  attempts     Int          @default(0)
+  nextAttemptAt DateTime    @default(now())
+  errorText    String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  session      Session?     @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([status, nextAttemptAt])
+}
