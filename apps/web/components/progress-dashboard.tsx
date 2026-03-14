@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { buildApiHeaders } from "../lib/api-request";
 import { useAuth } from "./auth-provider";
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
@@ -95,9 +96,9 @@ export function ProgressDashboard() {
         `${apiBaseUrl}/v1/progress?windowDays=${windowDays}`,
         {
           method: "GET",
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
+          headers: buildApiHeaders({
+            token
+          })
         }
       );
 

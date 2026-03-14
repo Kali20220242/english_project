@@ -50,6 +50,24 @@ Notes:
 - If `PUBSUB_ROLEPLAY_TURNS_SUBSCRIPTION` is empty, worker runs in idle mode.
 - `docker-compose` now loads root `.env` into `web`, `api`, and `ai-worker` via `env_file`.
 - Web build reads public keys from `apps/web/.env.local` (Next.js build-time env).
+- For CSRF protection, set the same random value in `API_CSRF_TOKEN` (API env) and `NEXT_PUBLIC_CSRF_TOKEN` (`apps/web/.env.local`).
+
+## Security baseline
+
+- Web now sends CSP + secure browser headers.
+- API now sends secure headers on every response.
+- API blocks state-changing requests from non-allowed origins and validates `x-csrf-token` when `API_CSRF_TOKEN` is configured.
+- Firebase ID tokens are also checked for session age (`FIREBASE_MAX_SESSION_AGE_SEC`).
+
+## Observability baseline
+
+- API runs Fastify with structured JSON logs (`LOG_LEVEL`) and sensitive-field redaction.
+- API emits `x-request-id` on responses for request correlation.
+- API and worker both support webhook-based error tracking via:
+  - `ERROR_TRACKING_WEBHOOK_URL`
+  - `ERROR_TRACKING_API_KEY`
+  - `ERROR_TRACKING_TIMEOUT_MS`
+- Worker logs are normalized as structured JSON events.
 
 ## GitHub connection
 

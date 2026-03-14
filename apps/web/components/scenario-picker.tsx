@@ -4,6 +4,7 @@ import { useDeferredValue, useEffect, useState } from "react";
 
 import { scenarioCatalog } from "../lib/scenario-catalog";
 import { saveActiveSessionState } from "../lib/active-session-state";
+import { buildApiHeaders } from "../lib/api-request";
 import {
   loadOnboardingStateFromStorage,
   type OnboardingState
@@ -113,10 +114,10 @@ export function ScenarioPicker() {
     try {
       const response = await fetch(`${apiBaseUrl}/v1/sessions`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`
-        },
+        headers: buildApiHeaders({
+          token,
+          json: true
+        }),
         body: JSON.stringify({
           scenarioId: selectedScenario.slug,
           level: onboarding.level,

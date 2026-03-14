@@ -11,6 +11,11 @@ import {
   PersistDomainTurnError,
   persistDomainTurn
 } from "./lib/persist-domain-turn";
+import {
+  logWorker,
+  registerWorkerProcessErrorHandlers,
+  trackWorkerError
+} from "./lib/observability";
 
 const roleplayTurnsSubscriptionName =
   process.env.PUBSUB_ROLEPLAY_TURNS_SUBSCRIPTION ?? "";
@@ -224,41 +229,34 @@ async function writeDlqEvent(input: {
       }
     });
   } catch (dlqError) {
-    console.error(
-      JSON.stringify({
-        service: "ai-worker",
-        event: "worker.dlq.persist_failed",
-        messageId: input.message.id,
-        reason: input.reason,
-        error: dlqError instanceof Error ? dlqError.message : String(dlqError)
-      })
-    );
+    logWorker("error", "worker.dlq.persist_failed", {
+      messageId: input.message.id,
+      reason: input.reason,
+      error: dlqError instanceof Error ? dlqError.message : String(dlqError)
+    });
   }
 }
 
 function logHeartbeat(state: string) {
-  console.log(
-    JSON.stringify({
-      service: "ai-worker",
-      state,
-      subscription: roleplayTurnsSubscriptionName || null,
-      maxInFlight,
-      maxRetries,
-      dlqStream,
-      bootAt: bootAt.toISOString(),
-      heartbeatAt: new Date().toISOString(),
-      counters: {
-        processed: processedCount,
-        malformed: malformedCount,
-        failed: failedCount,
-        retried: retriedCount,
-        dlq: dlqCount,
-        adapterFailures: adapterFailureCount,
-        mapperFailures: mapperFailureCount,
-        persistenceFailures: persistenceFailureCount
-      }
-    })
-  );
+  logWorker("info", "worker.heartbeat", {
+    state,
+    subscription: roleplayTurnsSubscriptionName || null,
+    maxInFlight,
+    maxRetries,
+    dlqStream,
+    bootAt: bootAt.toISOString(),
+    heartbeatAt: new Date().toISOString(),
+    counters: {
+      processed: processedCount,
+      malformed: malformedCount,
+      failed: failedCount,
+      retried: retriedCount,
+      dlq: dlqCount,
+      adapterFailures: adapterFailureCount,
+      mapperFailures: mapperFailureCount,
+      persistenceFailures: persistenceFailureCount
+    }
+  });
 }
 
 async function moveMessageToDlq(input: {
@@ -282,21 +280,31 @@ async function moveMessageToDlq(input: {
     deliveryAttempt: input.deliveryAttempt
   });
 
-  console.error(
-    JSON.stringify({
-      service: "ai-worker",
-      event: "worker.message.dlq",
+  logWorker("error", "worker.message.dlq", {
+    messageId: input.message.id,
+    outboxEventId: input.message.attributes.outboxEventId ?? null,
+    sessionId: input.job?.sessionId ?? null,
+    reason: input.reason,
+    retryable: input.retryable,
+    deliveryAttempt: input.deliveryAttempt,
+    maxRetries,
+    error: buildErrorMessage(input.error),
+    code: resolveWorkerErrorCode(input.error)
+  });
+
+  await trackWorkerError({
+    event: "worker.message.dlq",
+    error: input.error,
+    context: {
       messageId: input.message.id,
       outboxEventId: input.message.attributes.outboxEventId ?? null,
       sessionId: input.job?.sessionId ?? null,
       reason: input.reason,
       retryable: input.retryable,
       deliveryAttempt: input.deliveryAttempt,
-      maxRetries,
-      error: buildErrorMessage(input.error),
-      code: resolveWorkerErrorCode(input.error)
-    })
-  );
+      maxRetries
+    }
+  });
 
   input.message.ack();
 }
@@ -385,22 +393,18 @@ async function handleRoleplayTurnMessage(message: Message) {
 
     processedCount += 1;
 
-    console.log(
-      JSON.stringify({
-        service: "ai-worker",
-        event: "worker.message.ack",
-        messageId: message.id,
-        outboxEventId: message.attributes.outboxEventId ?? null,
-        sessionId: parsedJob.data.sessionId,
-        seq: parsedJob.data.seq,
-        provider: aiOutput.provider,
-        model: aiOutput.model,
-        replayed: persistedTurn.replayed,
-        assistantMessageId: persistedTurn.assistantMessageId,
-        savedPhraseCount: persistedTurn.savedPhraseCount,
-        deliveryAttempt
-      })
-    );
+    logWorker("info", "worker.message.ack", {
+      messageId: message.id,
+      outboxEventId: message.attributes.outboxEventId ?? null,
+      sessionId: parsedJob.data.sessionId,
+      seq: parsedJob.data.seq,
+      provider: aiOutput.provider,
+      model: aiOutput.model,
+      replayed: persistedTurn.replayed,
+      assistantMessageId: persistedTurn.assistantMessageId,
+      savedPhraseCount: persistedTurn.savedPhraseCount,
+      deliveryAttempt
+    });
 
     message.ack();
   } catch (error) {
@@ -434,20 +438,16 @@ async function handleRoleplayTurnMessage(message: Message) {
 
     retriedCount += 1;
 
-    console.error(
-      JSON.stringify({
-        service: "ai-worker",
-        event: "worker.message.retry",
-        messageId: message.id,
-        outboxEventId: message.attributes.outboxEventId ?? null,
-        sessionId: parsedJob.data.sessionId,
-        error: buildErrorMessage(error),
-        code: resolveWorkerErrorCode(error),
-        deliveryAttempt,
-        nextAttempt: deliveryAttempt + 1,
-        maxRetries
-      })
-    );
+    logWorker("warn", "worker.message.retry", {
+      messageId: message.id,
+      outboxEventId: message.attributes.outboxEventId ?? null,
+      sessionId: parsedJob.data.sessionId,
+      error: buildErrorMessage(error),
+      code: resolveWorkerErrorCode(error),
+      deliveryAttempt,
+      nextAttempt: deliveryAttempt + 1,
+      maxRetries
+    });
 
     message.nack();
   }
@@ -455,9 +455,9 @@ async function handleRoleplayTurnMessage(message: Message) {
 
 async function bootstrap() {
   if (!roleplayTurnsSubscriptionName || !pubsubClient) {
-    console.warn(
-      "[worker] PUBSUB_ROLEPLAY_TURNS_SUBSCRIPTION is not set. Worker starts in idle mode."
-    );
+    logWorker("warn", "worker.subscription.idle", {
+      reason: "PUBSUB_ROLEPLAY_TURNS_SUBSCRIPTION is not set."
+    });
 
     setInterval(() => {
       logHeartbeat("idle");
@@ -480,28 +480,27 @@ async function bootstrap() {
   });
 
   roleplayTurnsSubscription.on("error", (error) => {
-    console.error(
-      JSON.stringify({
-        service: "ai-worker",
-        event: "worker.subscription.error",
-        subscription: roleplayTurnsSubscriptionName,
-        error: error.message
-      })
-    );
+    logWorker("error", "worker.subscription.error", {
+      subscription: roleplayTurnsSubscriptionName,
+      error: error.message
+    });
+    void trackWorkerError({
+      event: "worker.subscription.error",
+      error,
+      context: {
+        subscription: roleplayTurnsSubscriptionName
+      }
+    });
   });
 
-  console.log(
-    JSON.stringify({
-      service: "ai-worker",
-      event: "worker.subscription.ready",
-      provider: "pubsub",
-      subscription: roleplayTurnsSubscriptionName,
-      projectId: projectId ?? null,
-      maxInFlight,
-      maxRetries,
-      dlqStream
-    })
-  );
+  logWorker("info", "worker.subscription.ready", {
+    provider: "pubsub",
+    subscription: roleplayTurnsSubscriptionName,
+    projectId: projectId ?? null,
+    maxInFlight,
+    maxRetries,
+    dlqStream
+  });
 
   setInterval(() => {
     logHeartbeat("consuming");
@@ -515,21 +514,17 @@ async function shutdown(signal: NodeJS.Signals) {
 
   shuttingDown = true;
 
-  console.log(
-    JSON.stringify({
-      service: "ai-worker",
-      event: "worker.shutdown.start",
-      signal,
-      processedCount,
-      malformedCount,
-      failedCount,
-      retriedCount,
-      dlqCount,
-      adapterFailureCount,
-      mapperFailureCount,
-      persistenceFailureCount
-    })
-  );
+  logWorker("info", "worker.shutdown.start", {
+    signal,
+    processedCount,
+    malformedCount,
+    failedCount,
+    retriedCount,
+    dlqCount,
+    adapterFailureCount,
+    mapperFailureCount,
+    persistenceFailureCount
+  });
 
   if (roleplayTurnsSubscription) {
     roleplayTurnsSubscription.removeAllListeners("message");
@@ -538,35 +533,25 @@ async function shutdown(signal: NodeJS.Signals) {
 
   if (pubsubClient) {
     await pubsubClient.close().catch((error: unknown) => {
-      console.error(
-        JSON.stringify({
-          service: "ai-worker",
-          event: "worker.shutdown.pubsub_close_failed",
-          error:
-            error instanceof Error ? error.message : "Pub/Sub close error."
-        })
-      );
+      logWorker("error", "worker.shutdown.pubsub_close_failed", {
+        error: error instanceof Error ? error.message : "Pub/Sub close error."
+      });
     });
   }
 
   await prisma.$disconnect().catch((error: unknown) => {
-    console.error(
-      JSON.stringify({
-        service: "ai-worker",
-        event: "worker.shutdown.db_disconnect_failed",
-        error:
-          error instanceof Error ? error.message : "Database disconnect error."
-      })
-    );
+    logWorker("error", "worker.shutdown.db_disconnect_failed", {
+      error:
+        error instanceof Error ? error.message : "Database disconnect error."
+    });
   });
 
-  console.log(
-    JSON.stringify({
-      service: "ai-worker",
-      event: "worker.shutdown.done"
-    })
-  );
+  logWorker("info", "worker.shutdown.done");
 }
+
+registerWorkerProcessErrorHandlers({
+  onFatal: () => shutdown("SIGTERM")
+});
 
 process.once("SIGINT", () => {
   void shutdown("SIGINT").finally(() => process.exit(0));
@@ -577,13 +562,10 @@ process.once("SIGTERM", () => {
 });
 
 bootstrap().catch((error: unknown) => {
-  console.error(
-    JSON.stringify({
-      service: "ai-worker",
-      event: "worker.bootstrap.failed",
-      error: error instanceof Error ? error.message : "Bootstrap failed."
-    })
-  );
-
-  void shutdown("SIGTERM").finally(() => process.exit(1));
+  void trackWorkerError({
+    event: "worker.bootstrap.failed",
+    error
+  }).finally(() => {
+    void shutdown("SIGTERM").finally(() => process.exit(1));
+  });
 });

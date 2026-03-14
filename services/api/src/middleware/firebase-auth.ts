@@ -5,6 +5,15 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { AuthUserBindingError, bindUserFromFirebaseToken } from "../lib/auth-user";
 import { firebaseAdminAuth, isFirebaseAdminConfigured } from "../lib/firebase-admin";
 
+const parsedMaxSessionAgeSeconds = Number.parseInt(
+  process.env.FIREBASE_MAX_SESSION_AGE_SEC ?? `${30 * 24 * 60 * 60}`,
+  10
+);
+const maxSessionAgeSeconds =
+  Number.isFinite(parsedMaxSessionAgeSeconds) && parsedMaxSessionAgeSeconds > 0
+    ? parsedMaxSessionAgeSeconds
+    : 30 * 24 * 60 * 60;
+
 declare module "fastify" {
   interface FastifyRequest {
     authUser: DecodedIdToken | null;
@@ -23,6 +32,17 @@ function getBearerToken(authorizationHeader?: string) {
 
   const token = authorizationHeader.slice("Bearer ".length).trim();
   return token.length > 0 ? token : null;
+}
+
+function isSessionFresh(decodedToken: DecodedIdToken) {
+  if (typeof decodedToken.auth_time !== "number") {
+    return true;
+  }
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const ageSeconds = nowSeconds - decodedToken.auth_time;
+
+  return ageSeconds <= maxSessionAgeSeconds;
 }
 
 export async function verifyFirebaseIdToken(
@@ -67,6 +87,14 @@ export async function verifyFirebaseIdToken(
     return reply.code(401).send({
       error: "INVALID_ID_TOKEN",
       message: "Provided Firebase ID token is invalid."
+    });
+  }
+
+  if (!isSessionFresh(request.authUser)) {
+    return reply.code(401).send({
+      error: "STALE_AUTH_SESSION",
+      message:
+        "Authentication session is too old. Re-authenticate to continue secured operations."
     });
   }
 

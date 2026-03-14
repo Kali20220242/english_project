@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import Fastify from "fastify";
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import type { RedisClientType } from "redis";
 
@@ -22,6 +22,11 @@ import {
 } from "./middleware/rate-limit";
 import { roleplayTurnPublisher } from "./lib/pubsub-publisher";
 import { hasRedisConfig, redisClient } from "./lib/redis";
+import {
+  buildApiLoggerConfig,
+  registerApiProcessErrorHandlers,
+  trackApiError
+} from "./lib/observability";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -30,7 +35,10 @@ declare module "fastify" {
   }
 }
 
-const app = Fastify({ logger: true });
+const app = Fastify({
+  logger: buildApiLoggerConfig(),
+  requestIdHeader: "x-request-id"
+});
 app.decorateRequest("authUser", null);
 app.decorateRequest("authDbUser", null);
 app.decorate("redis", redisClient);
@@ -60,6 +68,9 @@ const allowedCorsOrigins = (
   .split(",")
   .map((value) => value.trim())
   .filter(Boolean);
+const allowedMutationMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const configuredCsrfToken = (process.env.API_CSRF_TOKEN ?? "").trim();
+const hasConfiguredCsrfToken = configuredCsrfToken.length > 0;
 const savedPhraseSelect = {
   id: true,
   phrase: true,
@@ -96,11 +107,167 @@ function isCorsOriginAllowed(origin: string | undefined) {
   return allowedCorsOrigins.includes(origin);
 }
 
+function readHeaderValue(value: string | string[] | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    return value[0] ?? null;
+  }
+
+  return value;
+}
+
+function resolveOriginFromRequest(request: FastifyRequest) {
+  const originHeader = readHeaderValue(request.headers.origin)?.trim();
+
+  if (originHeader) {
+    return originHeader;
+  }
+
+  const refererHeader = readHeaderValue(request.headers.referer)?.trim();
+
+  if (!refererHeader) {
+    return null;
+  }
+
+  try {
+    return new URL(refererHeader).origin;
+  } catch {
+    return null;
+  }
+}
+
+function shouldValidateCsrf(request: FastifyRequest) {
+  return allowedMutationMethods.has(request.method.toUpperCase());
+}
+
+function addSecureResponseHeaders(reply: FastifyReply) {
+  reply.header("X-Request-Id", reply.request.id);
+  reply.header("Referrer-Policy", "strict-origin-when-cross-origin");
+  reply.header("X-Content-Type-Options", "nosniff");
+  reply.header("X-Frame-Options", "DENY");
+  reply.header("X-DNS-Prefetch-Control", "off");
+  reply.header("X-Permitted-Cross-Domain-Policies", "none");
+  reply.header("Cross-Origin-Opener-Policy", "same-origin");
+  reply.header("Cross-Origin-Resource-Policy", "same-site");
+  reply.header(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=()"
+  );
+
+  if (process.env.NODE_ENV === "production") {
+    reply.header(
+      "Strict-Transport-Security",
+      "max-age=31536000; includeSubDomains"
+    );
+  }
+}
+
 app.register(cors, {
   credentials: true,
   origin(origin, callback) {
     callback(null, isCorsOriginAllowed(origin));
   }
+});
+
+app.addHook("onRequest", async (request, reply) => {
+  addSecureResponseHeaders(reply);
+
+  if (!shouldValidateCsrf(request)) {
+    return;
+  }
+
+  const requestOrigin = resolveOriginFromRequest(request);
+
+  if (requestOrigin && !isCorsOriginAllowed(requestOrigin)) {
+    return reply.code(403).send({
+      error: "CSRF_ORIGIN_BLOCKED",
+      message:
+        "State-changing request origin is not allowed. Use a trusted frontend origin."
+    });
+  }
+
+  if (!hasConfiguredCsrfToken) {
+    return;
+  }
+
+  const csrfHeader = readHeaderValue(request.headers["x-csrf-token"])?.trim();
+
+  if (!csrfHeader || csrfHeader !== configuredCsrfToken) {
+    return reply.code(403).send({
+      error: "CSRF_TOKEN_INVALID",
+      message:
+        "Missing or invalid x-csrf-token header for state-changing request."
+    });
+  }
+});
+
+function resolveStatusCode(error: unknown) {
+  const candidate = (error as { statusCode?: unknown }).statusCode;
+
+  if (typeof candidate === "number" && Number.isFinite(candidate)) {
+    return candidate >= 400 && candidate <= 599 ? candidate : 500;
+  }
+
+  return 500;
+}
+
+app.setErrorHandler((error, request, reply) => {
+  const statusCode = resolveStatusCode(error);
+  const isServerError = statusCode >= 500;
+
+  request.log.error(
+    {
+      err: error,
+      statusCode,
+      method: request.method,
+      url: request.url,
+      route: request.routeOptions.url
+    },
+    "Unhandled API error"
+  );
+
+  if (isServerError) {
+    void trackApiError({
+      event: "api.unhandled_error",
+      error,
+      logger: request.log,
+      context: {
+        requestId: request.id,
+        method: request.method,
+        url: request.url,
+        route: request.routeOptions.url,
+        statusCode
+      }
+    });
+  }
+
+  if (reply.sent) {
+    return;
+  }
+
+  if (isServerError) {
+    return reply.code(500).send({
+      error: "INTERNAL_SERVER_ERROR",
+      message: "Unexpected server error."
+    });
+  }
+
+  const message =
+    error instanceof Error && error.message.trim().length > 0
+      ? error.message
+      : "Request failed.";
+  const code =
+    typeof (error as { code?: unknown }).code === "string"
+      ? ((error as { code: string }).code ?? "REQUEST_ERROR")
+      : "REQUEST_ERROR";
+
+  return reply.code(statusCode).send({
+    error: code,
+    message
+  });
 });
 
 function buildSubmitTurnRequestHash(input: {
@@ -1895,6 +2062,8 @@ app.post(
 const port = Number(process.env.PORT ?? 4000);
 
 async function bootstrap() {
+  registerApiProcessErrorHandlers(app);
+
   if (app.redis) {
     app.redis.on("error", (error) => {
       app.log.error(
@@ -1933,5 +2102,11 @@ async function bootstrap() {
 
 bootstrap().catch((error) => {
   app.log.error(error);
-  process.exit(1);
+  void trackApiError({
+    event: "api.bootstrap_failed",
+    error,
+    logger: app.log
+  }).finally(() => {
+    process.exit(1);
+  });
 });

@@ -3,6 +3,7 @@
 import { useDeferredValue, useEffect, useState } from "react";
 
 import { loadActiveSessionState } from "../lib/active-session-state";
+import { buildApiHeaders } from "../lib/api-request";
 import { useAuth } from "./auth-provider";
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
@@ -118,9 +119,9 @@ export function PhraseVaultPanel() {
 
       const response = await fetch(`${apiBaseUrl}/v1/phrases?${params.toString()}`, {
         method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`
-        }
+        headers: buildApiHeaders({
+          token
+        })
       });
 
       let payload: unknown = null;

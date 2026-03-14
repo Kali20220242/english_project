@@ -6,6 +6,7 @@ import {
   loadActiveSessionState,
   type ActiveSessionState
 } from "../lib/active-session-state";
+import { buildApiHeaders } from "../lib/api-request";
 import { useAuth } from "./auth-provider";
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
@@ -271,9 +272,9 @@ export function RoleplayChat() {
         `${apiBaseUrl}/v1/sessions/${input.sessionId}/messages?limit=300`,
         {
           method: "GET",
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
+          headers: buildApiHeaders({
+            token
+          })
         }
       );
 
@@ -430,10 +431,10 @@ export function RoleplayChat() {
     try {
       const response = await fetch(`${apiBaseUrl}/v1/messages`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`
-        },
+        headers: buildApiHeaders({
+          token,
+          json: true
+        }),
         body: JSON.stringify({
           sessionId: activeSession.sessionId,
           seq: nextSeq,
@@ -528,10 +529,10 @@ export function RoleplayChat() {
     try {
       const response = await fetch(`${apiBaseUrl}/v1/phrases`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`
-        },
+        headers: buildApiHeaders({
+          token,
+          json: true
+        }),
         body: JSON.stringify({
           phrase,
           context: input.message.correction?.naturalText || input.message.text,
