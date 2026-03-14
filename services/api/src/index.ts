@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
@@ -22,6 +22,11 @@ import {
 } from "./middleware/rate-limit";
 import { roleplayTurnPublisher } from "./lib/pubsub-publisher";
 import { hasRedisConfig, redisClient } from "./lib/redis";
+import {
+  buildIdempotencyEntityId,
+  buildSubmitTurnRequestHash,
+  resolveExistingIdempotencyRecord
+} from "./lib/idempotency";
 import {
   buildApiLoggerConfig,
   registerApiProcessErrorHandlers,
@@ -269,30 +274,6 @@ app.setErrorHandler((error, request, reply) => {
     message
   });
 });
-
-function buildSubmitTurnRequestHash(input: {
-  sessionId: string;
-  seq: number;
-  text: string;
-}) {
-  return createHash("sha256")
-    .update(
-      JSON.stringify({
-        sessionId: input.sessionId,
-        seq: input.seq,
-        text: input.text
-      })
-    )
-    .digest("hex");
-}
-
-function buildIdempotencyEntityId(input: {
-  userId: string;
-  scope: string;
-  key: string;
-}) {
-  return `${input.userId}:${input.scope}:${input.key}`;
-}
 
 function buildActor(firebaseUid: string) {
   return `firebase:${firebaseUid}`;
@@ -1605,9 +1586,12 @@ app.post(
     });
 
     if (existingIdempotency) {
-      const now = new Date();
+      const resolution = resolveExistingIdempotencyRecord({
+        existing: existingIdempotency,
+        requestHash
+      });
 
-      if (existingIdempotency.expiresAt <= now) {
+      if (resolution.type === "expired") {
         try {
           await prisma.idempotencyKey.delete({
             where: idempotencyWhere
@@ -1636,14 +1620,14 @@ app.post(
             throw error;
           }
         }
-      } else if (existingIdempotency.requestHash !== requestHash) {
+      } else if (resolution.type === "conflict") {
         return reply.code(409).send({
           error: "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD",
           message:
             "This idempotencyKey was already used with a different request payload."
         });
-      } else {
-        const replayMessage = await loadReplayMessage(existingIdempotency.responseRef);
+      } else if (resolution.type === "replay") {
+        const replayMessage = await loadReplayMessage(resolution.responseRef);
 
         if (replayMessage) {
           return reply.code(200).send({
@@ -1661,6 +1645,12 @@ app.post(
           });
         }
 
+        return reply.code(409).send({
+          error: "IDEMPOTENCY_KEY_IN_PROGRESS",
+          message:
+            "This idempotencyKey is currently processing. Retry with the same payload."
+        });
+      } else {
         return reply.code(409).send({
           error: "IDEMPOTENCY_KEY_IN_PROGRESS",
           message:

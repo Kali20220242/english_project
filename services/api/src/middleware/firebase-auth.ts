@@ -13,6 +13,9 @@ const maxSessionAgeSeconds =
   Number.isFinite(parsedMaxSessionAgeSeconds) && parsedMaxSessionAgeSeconds > 0
     ? parsedMaxSessionAgeSeconds
     : 30 * 24 * 60 * 60;
+const isTestAuthBypassEnabled =
+  process.env.NODE_ENV === "test" &&
+  process.env.ENABLE_TEST_AUTH_BYPASS === "1";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -45,10 +48,62 @@ function isSessionFresh(decodedToken: DecodedIdToken) {
   return ageSeconds <= maxSessionAgeSeconds;
 }
 
+function buildBypassToken(request: FastifyRequest): DecodedIdToken {
+  const uidHeader = request.headers["x-test-firebase-uid"];
+  const emailHeader = request.headers["x-test-email"];
+  const uid =
+    (Array.isArray(uidHeader) ? uidHeader[0] : uidHeader)?.trim() ||
+    "integration_test_uid";
+  const email =
+    (Array.isArray(emailHeader) ? emailHeader[0] : emailHeader)?.trim() ||
+    `${uid}@integration.test`;
+  const nowSeconds = Math.floor(Date.now() / 1000);
+
+  return {
+    uid,
+    email,
+    email_verified: true,
+    auth_time: nowSeconds,
+    iat: nowSeconds,
+    exp: nowSeconds + 60 * 60,
+    aud: "integration-tests",
+    iss: "integration-tests",
+    sub: uid
+  } as DecodedIdToken;
+}
+
 export async function verifyFirebaseIdToken(
   request: FastifyRequest,
   reply: FastifyReply
 ) {
+  if (isTestAuthBypassEnabled) {
+    request.authUser = buildBypassToken(request);
+
+    try {
+      request.authDbUser = await bindUserFromFirebaseToken(request.authUser);
+      return;
+    } catch (error) {
+      if (error instanceof AuthUserBindingError) {
+        return reply.code(error.statusCode).send({
+          error: error.code,
+          message: error.message
+        });
+      }
+
+      request.log.error(
+        {
+          err: error
+        },
+        "Unexpected auth user binding error in test bypass mode"
+      );
+
+      return reply.code(500).send({
+        error: "AUTH_USER_BINDING_FAILED",
+        message: "Failed to sync bypass-authenticated user with database."
+      });
+    }
+  }
+
   if (!isFirebaseAdminConfigured || !firebaseAdminAuth) {
     return reply.code(503).send({
       error: "FIREBASE_AUTH_NOT_CONFIGURED",

@@ -30,6 +30,12 @@ Monorepo for an AI English roleplay platform with a Firebase-hosted web app, a d
    - `npm run dev:web`
    - `npm run dev:api`
    - `npm run dev:worker`
+6. Run unit tests:
+   - `npm run test:unit`
+7. Run API integration tests (sessions/messages):
+   - `npm run test:integration:api`
+8. Run API e2e happy-path test:
+   - `npm run test:e2e:api`
 
 ## Docker full stack
 

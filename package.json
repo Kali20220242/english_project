@@ -14,6 +14,9 @@
     "dev:worker": "npm run dev -w @neontalk/ai-worker",
     "build": "npm run build -w @neontalk/contracts && npm run build -w @neontalk/db && npm run build -w @neontalk/api && npm run build -w @neontalk/ai-worker && npm run build -w @neontalk/web",
     "typecheck": "npm run typecheck -w @neontalk/contracts && npm run typecheck -w @neontalk/db && npm run typecheck -w @neontalk/api && npm run typecheck -w @neontalk/ai-worker && npm run typecheck -w @neontalk/web",
+    "test:unit": "node --import tsx --test packages/contracts/src/index.test.ts services/api/src/lib/idempotency.test.ts services/ai-worker/src/lib/anti-corruption-mapper.test.ts",
+    "test:integration:api": "node --env-file=.env --import tsx --test services/api/src/integration/sessions-messages.integration.test.ts",
+    "test:e2e:api": "node --env-file=.env --import tsx --test services/api/src/e2e/happy-path.e2e.test.ts",
     "db:generate": "npm run db:generate -w @neontalk/db",
     "db:migrate": "npm run db:migrate -w @neontalk/db",
     "db:deploy": "npm run db:deploy -w @neontalk/db"
