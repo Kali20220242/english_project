@@ -3,7 +3,14 @@
 import { startTransition, createContext, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
-import { onIdTokenChanged, signInWithPopup, signOut, type User } from "firebase/auth";
+import {
+  getRedirectResult,
+  onIdTokenChanged,
+  signInWithPopup,
+  signInWithRedirect,
+  signOut,
+  type User
+} from "firebase/auth";
 
 import {
   firebaseAuth,
@@ -40,6 +47,16 @@ export function AuthProvider({ children }: AuthProviderProps) {
       return;
     }
 
+    void getRedirectResult(firebaseAuth).catch((redirectError) => {
+      const message =
+        redirectError instanceof Error
+          ? redirectError.message
+          : "Failed to complete redirect sign in.";
+      startTransition(() => {
+        setError(message);
+      });
+    });
+
     const unsubscribe = onIdTokenChanged(
       firebaseAuth,
       (nextUser) => {
@@ -59,6 +76,38 @@ export function AuthProvider({ children }: AuthProviderProps) {
     return unsubscribe;
   }, []);
 
+  useEffect(() => {
+    if (!firebaseAuth || typeof window === "undefined") {
+      return;
+    }
+
+    const auth = firebaseAuth;
+
+    function handleAuthWindowMessage(event: MessageEvent) {
+      if (event.origin !== window.location.origin) {
+        return;
+      }
+
+      if (
+        event.data &&
+        typeof event.data === "object" &&
+        (event.data as { type?: unknown }).type === "neontalk-auth-success"
+      ) {
+        startTransition(() => {
+          setUser(auth.currentUser);
+          setError(null);
+          setIsLoading(false);
+        });
+      }
+    }
+
+    window.addEventListener("message", handleAuthWindowMessage);
+
+    return () => {
+      window.removeEventListener("message", handleAuthWindowMessage);
+    };
+  }, []);
+
   async function signInWithGoogle() {
     if (!firebaseAuth || !googleProvider) {
       setError("Firebase Auth is not configured in environment variables.");
@@ -69,6 +118,28 @@ export function AuthProvider({ children }: AuthProviderProps) {
       setError(null);
       await signInWithPopup(firebaseAuth, googleProvider);
     } catch (authError) {
+      const errorCode =
+        authError && typeof authError === "object" && "code" in authError
+          ? String((authError as { code?: unknown }).code ?? "")
+          : "";
+
+      if (
+        errorCode === "auth/internal-error" ||
+        errorCode === "auth/popup-blocked"
+      ) {
+        try {
+          await signInWithRedirect(firebaseAuth, googleProvider);
+          return;
+        } catch (redirectError) {
+          const message =
+            redirectError instanceof Error
+              ? redirectError.message
+              : "Failed to start redirect sign in.";
+          setError(message);
+          return;
+        }
+      }
+
       const message =
         authError instanceof Error ? authError.message : "Failed to sign in.";
       setError(message);

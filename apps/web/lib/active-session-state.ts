@@ -14,6 +14,7 @@ export type ActiveSessionState = {
     personaStyle: string;
     nativeLanguage: string;
     timezone: string;
+    aiModel?: string;
   };
 };
 
@@ -61,4 +62,12 @@ export function saveActiveSessionState(input: ActiveSessionState) {
   }
 
   localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(input));
+}
+
+export function clearActiveSessionState() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
 }

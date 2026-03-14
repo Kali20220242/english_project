@@ -1,38 +1,38 @@
 runConfig:
   minInstances: 0
-  maxInstances: 2
+  maxInstances: 1
   cpu: 1
   memoryMiB: 512
-  concurrency: 80
+  concurrency: 40
 
 env:
+  - variable: NEXT_PUBLIC_API_BASE_URL
+    secret: neontalk-staging-next-public-api-base-url
+    availability:
+      - BUILD
+      - RUNTIME
   - variable: NEXT_PUBLIC_FIREBASE_API_KEY
-    value: replace-in-environment-override
+    secret: neontalk-staging-next-public-firebase-api-key
     availability:
       - BUILD
       - RUNTIME
   - variable: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
-    value: replace-in-environment-override
+    secret: neontalk-staging-next-public-firebase-auth-domain
     availability:
       - BUILD
       - RUNTIME
   - variable: NEXT_PUBLIC_FIREBASE_PROJECT_ID
-    value: replace-in-environment-override
+    secret: neontalk-staging-next-public-firebase-project-id
     availability:
       - BUILD
       - RUNTIME
   - variable: NEXT_PUBLIC_FIREBASE_APP_ID
-    value: replace-in-environment-override
-    availability:
-      - BUILD
-      - RUNTIME
-  - variable: NEXT_PUBLIC_API_BASE_URL
-    value: https://api.example.com
+    secret: neontalk-staging-next-public-firebase-app-id
     availability:
       - BUILD
       - RUNTIME
   - variable: NEXT_PUBLIC_CSRF_TOKEN
-    value: ""
+    secret: neontalk-staging-next-public-csrf-token
     availability:
       - BUILD
       - RUNTIME

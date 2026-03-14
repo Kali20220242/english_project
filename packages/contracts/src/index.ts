@@ -1,6 +1,16 @@
 import { z } from "zod";
 
 export const EnglishLevelSchema = z.enum(["A1", "A2", "B1", "B2", "C1", "C2"]);
+export const DEFAULT_AI_MODEL = "gpt-4.1-mini";
+export const AiModelSchema = z
+  .string()
+  .trim()
+  .min(2)
+  .max(80)
+  .regex(
+    /^[a-zA-Z0-9._:-]+$/,
+    "aiModel may contain only letters, numbers, dot, underscore, colon, and dash."
+  );
 
 export const PersonaStyleSchema = z.enum([
   "soft",
@@ -14,7 +24,8 @@ export const CreateSessionSchema = z.object({
   level: EnglishLevelSchema,
   personaStyle: PersonaStyleSchema,
   nativeLanguage: z.string().min(2).max(10),
-  timezone: z.string().min(3)
+  timezone: z.string().min(3),
+  aiModel: AiModelSchema.default(DEFAULT_AI_MODEL)
 });
 
 export const SubmitTurnSchema = z.object({
@@ -44,7 +55,8 @@ export const RoleplayTurnJobSchema = z.object({
   seq: z.number().int().positive(),
   scenarioId: z.string().min(3),
   inputText: z.string().min(1),
-  contextVersion: z.number().int().positive()
+  contextVersion: z.number().int().positive(),
+  aiModel: AiModelSchema.default(DEFAULT_AI_MODEL)
 });
 
 export const RoleplayTurnResultSchema = z.object({
@@ -54,6 +66,7 @@ export const RoleplayTurnResultSchema = z.object({
   correction: z.object({
     original: z.string().min(1),
     natural: z.string().min(1),
+    translationUk: z.string().min(1),
     why: z.array(z.string().min(1)).min(1)
   }),
   phrases: z.array(z.string().min(1)).default([]),

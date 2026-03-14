@@ -1,4 +1,7 @@
+import { createServer, type Server } from "node:http";
+
 import { PubSub, type Message, type Subscription } from "@google-cloud/pubsub";
+import { OutboxStatus } from "@prisma/client";
 
 import { RoleplayTurnJobSchema, type RoleplayTurnJob } from "@neontalk/contracts";
 import { prisma } from "@neontalk/db";
@@ -21,6 +24,7 @@ const roleplayTurnsSubscriptionName =
   process.env.PUBSUB_ROLEPLAY_TURNS_SUBSCRIPTION ?? "";
 const projectId =
   process.env.GOOGLE_CLOUD_PROJECT ?? process.env.GCLOUD_PROJECT ?? undefined;
+const roleplayTurnsTopic = "roleplay-turns";
 const parsedMaxInFlight = Number.parseInt(
   process.env.WORKER_MAX_IN_FLIGHT ?? "10",
   10
@@ -37,6 +41,22 @@ const heartbeatMs =
   Number.isFinite(parsedHeartbeatMs) && parsedHeartbeatMs > 0
     ? parsedHeartbeatMs
     : 30000;
+const parsedOutboxPollMs = Number.parseInt(
+  process.env.WORKER_OUTBOX_POLL_MS ?? "1500",
+  10
+);
+const outboxPollMs =
+  Number.isFinite(parsedOutboxPollMs) && parsedOutboxPollMs > 0
+    ? parsedOutboxPollMs
+    : 1500;
+const parsedOutboxRetryDelayMs = Number.parseInt(
+  process.env.WORKER_OUTBOX_RETRY_DELAY_MS ?? "60000",
+  10
+);
+const outboxRetryDelayMs =
+  Number.isFinite(parsedOutboxRetryDelayMs) && parsedOutboxRetryDelayMs > 0
+    ? parsedOutboxRetryDelayMs
+    : 60000;
 const parsedMaxRetries = Number.parseInt(
   process.env.WORKER_MAX_RETRIES ?? "5",
   10
@@ -45,6 +65,11 @@ const maxRetries =
   Number.isFinite(parsedMaxRetries) && parsedMaxRetries > 0
     ? parsedMaxRetries
     : 5;
+const parsedWorkerPort = Number.parseInt(process.env.PORT ?? "8080", 10);
+const workerPort =
+  Number.isFinite(parsedWorkerPort) && parsedWorkerPort > 0
+    ? parsedWorkerPort
+    : 8080;
 const dlqStream = process.env.WORKER_DLQ_STREAM?.trim() || "worker.dlq";
 const rawPayloadPreviewLength = 2000;
 const rawModelOutputPreviewLength = 2000;
@@ -63,6 +88,8 @@ let adapterFailureCount = 0;
 let mapperFailureCount = 0;
 let persistenceFailureCount = 0;
 let shuttingDown = false;
+let healthServer: Server | null = null;
+let outboxPollingInFlight = false;
 
 const bootAt = new Date();
 
@@ -77,6 +104,132 @@ type ParsedMessageData =
       payloadText: string;
       error: string;
     };
+
+function resolveWorkerState() {
+  if (shuttingDown) {
+    return "shutting_down";
+  }
+
+  if (!roleplayTurnsSubscriptionName || !pubsubClient) {
+    return "consuming_outbox";
+  }
+
+  return roleplayTurnsSubscription ? "consuming" : "starting";
+}
+
+function buildHealthPayload() {
+  return {
+    status: "ok",
+    service: "ai-worker",
+    state: resolveWorkerState(),
+    time: new Date().toISOString(),
+    subscription: roleplayTurnsSubscriptionName || null,
+    counters: {
+      processed: processedCount,
+      malformed: malformedCount,
+      failed: failedCount,
+      retried: retriedCount,
+      dlq: dlqCount
+    }
+  };
+}
+
+type ProcessRoleplayTurnInput = {
+  job: RoleplayTurnJob;
+  messageId: string;
+  outboxEventId: string | null;
+  sourceUserMessageId: string | null;
+  publishTime: Date | null;
+  transport: "pubsub" | "outbox";
+  payloadText?: string | null;
+  attributes?: {
+    aggregateId?: string | null;
+    aggregateType?: string | null;
+    type?: string | null;
+  };
+};
+
+async function processRoleplayTurn(input: ProcessRoleplayTurnInput) {
+  const aiOutput = await generateRoleplayTurn(input.job);
+  const domainTurn = mapAiPayloadToDomain({
+    job: input.job,
+    aiPayload: aiOutput.result
+  });
+  const persistedTurn = await persistDomainTurn({
+    domainTurn,
+    sourceUserMessageId: input.sourceUserMessageId,
+    pubsubMessageId: input.messageId,
+    outboxEventId: input.outboxEventId,
+    aiProvider: aiOutput.provider,
+    aiModel: aiOutput.model
+  });
+
+  await prisma.eventLog.create({
+    data: {
+      messageId: persistedTurn.assistantMessageId,
+      stream:
+        input.transport === "pubsub"
+          ? "pubsub.roleplay-turns"
+          : "outbox.roleplay-turns",
+      streamId: input.job.sessionId,
+      eventType: "ROLEPLAY_TURN_DOMAIN_MAPPED",
+      payload: {
+        provider: input.transport,
+        messageId: input.messageId,
+        publishTime: input.publishTime ? input.publishTime.toISOString() : null,
+        outboxEventId: input.outboxEventId,
+        aggregateId: input.attributes?.aggregateId ?? null,
+        aggregateType: input.attributes?.aggregateType ?? null,
+        topicType: input.attributes?.type ?? null,
+        job: input.job,
+        rawPayloadPreview: input.payloadText?.slice(0, rawPayloadPreviewLength) ?? null,
+        aiAdapter: {
+          provider: aiOutput.provider,
+          model: aiOutput.model,
+          rawPreview: aiOutput.rawContent.slice(0, rawModelOutputPreviewLength)
+        },
+        result: aiOutput.result,
+        domainTurn,
+        persistedTurn
+      }
+    }
+  });
+
+  return {
+    aiOutput,
+    persistedTurn
+  };
+}
+
+async function startHealthServer() {
+  if (healthServer) {
+    return;
+  }
+
+  healthServer = createServer((request, response) => {
+    if (request.url === "/health") {
+      response.statusCode = 200;
+      response.setHeader("content-type", "application/json; charset=utf-8");
+      response.end(JSON.stringify(buildHealthPayload()));
+      return;
+    }
+
+    response.statusCode = 200;
+    response.setHeader("content-type", "text/plain; charset=utf-8");
+    response.end("ok");
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    healthServer?.once("error", reject);
+    healthServer?.listen(workerPort, "0.0.0.0", () => {
+      resolve();
+    });
+  });
+
+  logWorker("info", "worker.health.ready", {
+    port: workerPort
+  });
+}
 
 function parseMessageData(message: Message): ParsedMessageData {
   const payloadText = message.data.toString("utf8");
@@ -144,7 +297,10 @@ function isRetryableProcessingError(error: unknown) {
   }
 
   if (error instanceof AiAdapterError) {
-    return error.code !== "INVALID_RESULT_CONTEXT";
+    return (
+      error.code !== "INVALID_RESULT_CONTEXT" &&
+      error.code !== "MODEL_PROVIDER_NOT_CONFIGURED"
+    );
   }
 
   return true;
@@ -348,46 +504,18 @@ async function handleRoleplayTurnMessage(message: Message) {
   }
 
   try {
-    const aiOutput = await generateRoleplayTurn(parsedJob.data);
-    const domainTurn = mapAiPayloadToDomain({
+    const { aiOutput, persistedTurn } = await processRoleplayTurn({
       job: parsedJob.data,
-      aiPayload: aiOutput.result
-    });
-    const persistedTurn = await persistDomainTurn({
-      domainTurn,
-      sourceUserMessageId: message.attributes.aggregateId ?? null,
-      pubsubMessageId: message.id,
+      messageId: message.id,
       outboxEventId: message.attributes.outboxEventId ?? null,
-      aiProvider: aiOutput.provider,
-      aiModel: aiOutput.model
-    });
-
-    await prisma.eventLog.create({
-      data: {
-        messageId: persistedTurn.assistantMessageId,
-        stream: "pubsub.roleplay-turns",
-        streamId: parsedJob.data.sessionId,
-        eventType: "ROLEPLAY_TURN_DOMAIN_MAPPED",
-        payload: {
-          provider: "pubsub",
-          messageId: message.id,
-          publishTime: message.publishTime
-            ? message.publishTime.toISOString()
-            : null,
-          outboxEventId: message.attributes.outboxEventId ?? null,
-          aggregateId: message.attributes.aggregateId ?? null,
-          aggregateType: message.attributes.aggregateType ?? null,
-          topicType: message.attributes.type ?? null,
-          job: parsedJob.data,
-          aiAdapter: {
-            provider: aiOutput.provider,
-            model: aiOutput.model,
-            rawPreview: aiOutput.rawContent.slice(0, rawModelOutputPreviewLength)
-          },
-          result: aiOutput.result,
-          domainTurn,
-          persistedTurn
-        }
+      sourceUserMessageId: message.attributes.aggregateId ?? null,
+      publishTime: message.publishTime ?? null,
+      transport: "pubsub",
+      payloadText: parsedPayload.payloadText,
+      attributes: {
+        aggregateId: message.attributes.aggregateId ?? null,
+        aggregateType: message.attributes.aggregateType ?? null,
+        type: message.attributes.type ?? null
       }
     });
 
@@ -453,14 +581,352 @@ async function handleRoleplayTurnMessage(message: Message) {
   }
 }
 
-async function bootstrap() {
-  if (!roleplayTurnsSubscriptionName || !pubsubClient) {
-    logWorker("warn", "worker.subscription.idle", {
-      reason: "PUBSUB_ROLEPLAY_TURNS_SUBSCRIPTION is not set."
+type ClaimableOutboxEvent = {
+  id: string;
+  sessionId: string | null;
+  aggregateId: string;
+  aggregateType: string;
+  payload: unknown;
+  attempts: number;
+};
+
+async function fetchClaimableOutboxEvents() {
+  const now = new Date();
+  const candidates = await prisma.outboxEvent.findMany({
+    where: {
+      topic: roleplayTurnsTopic,
+      status: {
+        in: [OutboxStatus.PENDING, OutboxStatus.FAILED]
+      },
+      nextAttemptAt: {
+        lte: now
+      }
+    },
+    orderBy: [
+      {
+        nextAttemptAt: "asc"
+      },
+      {
+        createdAt: "asc"
+      }
+    ],
+    take: maxInFlight,
+    select: {
+      id: true,
+      sessionId: true,
+      aggregateId: true,
+      aggregateType: true,
+      payload: true,
+      attempts: true
+    }
+  });
+
+  const claimed: ClaimableOutboxEvent[] = [];
+
+  for (const candidate of candidates) {
+    const claimedRow = await prisma.outboxEvent.updateMany({
+      where: {
+        id: candidate.id,
+        status: {
+          in: [OutboxStatus.PENDING, OutboxStatus.FAILED]
+        },
+        nextAttemptAt: {
+          lte: now
+        }
+      },
+      data: {
+        status: OutboxStatus.PROCESSING
+      }
     });
 
+    if (claimedRow.count === 1) {
+      claimed.push(candidate);
+    }
+  }
+
+  return claimed;
+}
+
+async function finalizeOutboxSuccess(eventId: string) {
+  await prisma.outboxEvent.update({
+    where: {
+      id: eventId
+    },
+    data: {
+      status: OutboxStatus.SENT,
+      attempts: {
+        increment: 1
+      },
+      errorText: null,
+      nextAttemptAt: new Date()
+    }
+  });
+}
+
+async function finalizeOutboxFailure(input: {
+  eventId: string;
+  errorText: string;
+  nextAttemptAt: Date;
+}) {
+  await prisma.outboxEvent.update({
+    where: {
+      id: input.eventId
+    },
+    data: {
+      status: OutboxStatus.FAILED,
+      attempts: {
+        increment: 1
+      },
+      errorText: input.errorText.slice(0, 1000),
+      nextAttemptAt: input.nextAttemptAt
+    }
+  });
+}
+
+async function writeOutboxDlqEvent(input: {
+  eventId: string;
+  sessionId: string | null;
+  aggregateId: string;
+  aggregateType: string;
+  payloadText: string;
+  job: RoleplayTurnJob | null;
+  reason: string;
+  retryable: boolean;
+  attempt: number;
+  error: unknown;
+}) {
+  const errorCode = resolveWorkerErrorCode(input.error);
+  const errorDetails = resolveWorkerErrorDetails(input.error);
+  const errorMessage = buildErrorMessage(input.error);
+
+  try {
+    await prisma.eventLog.create({
+      data: {
+        stream: dlqStream,
+        streamId: input.sessionId ?? input.aggregateId ?? input.eventId,
+        eventType: "ROLEPLAY_TURN_DLQ",
+        payload: {
+          reason: input.reason,
+          retryable: input.retryable,
+          deliveryAttempt: input.attempt,
+          maxRetries,
+          error: {
+            code: errorCode,
+            message: errorMessage,
+            details: errorDetails
+          },
+          outboxEvent: {
+            id: input.eventId,
+            sessionId: input.sessionId,
+            aggregateId: input.aggregateId,
+            aggregateType: input.aggregateType
+          },
+          job: input.job,
+          payloadPreview: input.payloadText.slice(0, rawPayloadPreviewLength)
+        }
+      }
+    });
+  } catch (dlqError) {
+    logWorker("error", "worker.outbox.dlq.persist_failed", {
+      outboxEventId: input.eventId,
+      reason: input.reason,
+      error: dlqError instanceof Error ? dlqError.message : String(dlqError)
+    });
+  }
+}
+
+async function processOutboxEvent(event: ClaimableOutboxEvent) {
+  const payloadText = JSON.stringify(event.payload ?? null);
+  const parsedJob = RoleplayTurnJobSchema.safeParse(event.payload);
+  const attempt = event.attempts + 1;
+
+  if (!parsedJob.success) {
+    malformedCount += 1;
+
+    await finalizeOutboxFailure({
+      eventId: event.id,
+      errorText: "INVALID_JOB_CONTRACT",
+      nextAttemptAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
+    });
+
+    await writeOutboxDlqEvent({
+      eventId: event.id,
+      sessionId: event.sessionId,
+      aggregateId: event.aggregateId,
+      aggregateType: event.aggregateType,
+      payloadText,
+      job: null,
+      reason: "INVALID_JOB_CONTRACT",
+      retryable: false,
+      attempt,
+      error: parsedJob.error
+    });
+
+    return;
+  }
+
+  try {
+    const { aiOutput, persistedTurn } = await processRoleplayTurn({
+      job: parsedJob.data,
+      messageId: `outbox:${event.id}`,
+      outboxEventId: event.id,
+      sourceUserMessageId: event.aggregateId ?? null,
+      publishTime: null,
+      transport: "outbox",
+      payloadText,
+      attributes: {
+        aggregateId: event.aggregateId,
+        aggregateType: event.aggregateType,
+        type: parsedJob.data.type
+      }
+    });
+
+    await finalizeOutboxSuccess(event.id);
+    processedCount += 1;
+
+    logWorker("info", "worker.outbox.processed", {
+      outboxEventId: event.id,
+      sessionId: parsedJob.data.sessionId,
+      seq: parsedJob.data.seq,
+      provider: aiOutput.provider,
+      model: aiOutput.model,
+      replayed: persistedTurn.replayed,
+      assistantMessageId: persistedTurn.assistantMessageId,
+      savedPhraseCount: persistedTurn.savedPhraseCount,
+      attempt
+    });
+  } catch (error) {
+    failedCount += 1;
+    if (error instanceof AiAdapterError) {
+      adapterFailureCount += 1;
+    }
+    if (error instanceof AntiCorruptionMapperError) {
+      mapperFailureCount += 1;
+    }
+    if (error instanceof PersistDomainTurnError) {
+      persistenceFailureCount += 1;
+    }
+
+    const retryable = isRetryableProcessingError(error);
+    const reachedRetryLimit = attempt >= maxRetries;
+
+    if (!retryable || reachedRetryLimit) {
+      dlqCount += 1;
+
+      await finalizeOutboxFailure({
+        eventId: event.id,
+        errorText: buildErrorMessage(error),
+        nextAttemptAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
+      });
+
+      await writeOutboxDlqEvent({
+        eventId: event.id,
+        sessionId: event.sessionId,
+        aggregateId: event.aggregateId,
+        aggregateType: event.aggregateType,
+        payloadText,
+        job: parsedJob.data,
+        reason: !retryable ? "NON_RETRYABLE_ERROR" : "MAX_RETRIES_EXCEEDED",
+        retryable,
+        attempt,
+        error
+      });
+
+      logWorker("error", "worker.outbox.dlq", {
+        outboxEventId: event.id,
+        sessionId: parsedJob.data.sessionId,
+        reason: !retryable ? "NON_RETRYABLE_ERROR" : "MAX_RETRIES_EXCEEDED",
+        retryable,
+        attempt,
+        maxRetries,
+        code: resolveWorkerErrorCode(error),
+        error: buildErrorMessage(error)
+      });
+
+      await trackWorkerError({
+        event: "worker.outbox.dlq",
+        error,
+        context: {
+          outboxEventId: event.id,
+          sessionId: parsedJob.data.sessionId,
+          retryable,
+          attempt,
+          maxRetries
+        }
+      });
+
+      return;
+    }
+
+    retriedCount += 1;
+
+    await finalizeOutboxFailure({
+      eventId: event.id,
+      errorText: buildErrorMessage(error),
+      nextAttemptAt: new Date(Date.now() + outboxRetryDelayMs)
+    });
+
+    logWorker("warn", "worker.outbox.retry", {
+      outboxEventId: event.id,
+      sessionId: parsedJob.data.sessionId,
+      attempt,
+      nextAttempt: attempt + 1,
+      maxRetries,
+      code: resolveWorkerErrorCode(error),
+      error: buildErrorMessage(error)
+    });
+  }
+}
+
+async function pollOutboxOnce() {
+  if (outboxPollingInFlight || shuttingDown) {
+    return;
+  }
+
+  outboxPollingInFlight = true;
+
+  try {
+    const claimedEvents = await fetchClaimableOutboxEvents();
+
+    for (const event of claimedEvents) {
+      await processOutboxEvent(event);
+    }
+  } catch (error) {
+    logWorker("error", "worker.outbox.poll.failed", {
+      error: error instanceof Error ? error.message : String(error)
+    });
+    await trackWorkerError({
+      event: "worker.outbox.poll.failed",
+      error
+    });
+  } finally {
+    outboxPollingInFlight = false;
+  }
+}
+
+async function bootstrap() {
+  await startHealthServer();
+
+  if (!roleplayTurnsSubscriptionName || !pubsubClient) {
+    logWorker("warn", "worker.subscription.idle", {
+      reason:
+        "PUBSUB_ROLEPLAY_TURNS_SUBSCRIPTION is not set. Falling back to outbox polling mode."
+    });
+
+    logWorker("info", "worker.outbox.poller.ready", {
+      topic: roleplayTurnsTopic,
+      pollIntervalMs: outboxPollMs,
+      maxInFlight,
+      maxRetries
+    });
+
+    void pollOutboxOnce();
     setInterval(() => {
-      logHeartbeat("idle");
+      void pollOutboxOnce();
+    }, outboxPollMs);
+
+    setInterval(() => {
+      logHeartbeat("consuming_outbox");
     }, heartbeatMs);
 
     return;
@@ -537,6 +1003,13 @@ async function shutdown(signal: NodeJS.Signals) {
         error: error instanceof Error ? error.message : "Pub/Sub close error."
       });
     });
+  }
+
+  if (healthServer) {
+    await new Promise<void>((resolve) => {
+      healthServer?.close(() => resolve());
+    });
+    healthServer = null;
   }
 
   await prisma.$disconnect().catch((error: unknown) => {

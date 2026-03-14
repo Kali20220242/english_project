@@ -78,6 +78,7 @@ model Session {
   id                String             @id @default(cuid())
   userId            String
   scenarioId        String
+  aiModel           String             @default("gpt-4.1-mini")
   status            SessionStatus      @default(ACTIVE)
   contextVersion    Int                @default(1)
   startedAt         DateTime           @default(now())

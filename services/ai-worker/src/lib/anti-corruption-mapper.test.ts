@@ -19,6 +19,7 @@ function buildJob(overrides: Partial<RoleplayTurnJob> = {}): RoleplayTurnJob {
     scenarioId: "dating",
     inputText: "i want coffee",
     contextVersion: 1,
+    aiModel: "gpt-4.1-mini",
     ...overrides
   };
 }
@@ -33,6 +34,7 @@ function buildAiPayload(
     correction: {
       original: "i want coffee",
       natural: " I want coffee. ",
+      translationUk: "Я хочу кави.",
       why: [" Start with a capital letter. "]
     },
     phrases: ["Could I get a coffee?"],
@@ -57,9 +59,10 @@ describe("anti-corruption mapper", () => {
         correction: {
           original: "i want coffee",
           natural: "  I want coffee, please. ",
+          translationUk: "Я хочу кави, будь ласка.",
           why: ["  Use polite wording. ", "use polite wording.", "  "]
         },
-        phrases: ["Could I get a coffee?", "could i get a coffee?", "Thanks!"],
+        phrases: ["Could I get a coffee?", "could i get a coffee?", "Thanks a lot"],
         safety: {
           blocked: false,
           flags: ["minor", "MINOR"]
@@ -70,10 +73,13 @@ describe("anti-corruption mapper", () => {
     assert.equal(mapped.assistantMessage.text, "Nice choice.");
     assert.equal(mapped.correction.originalText, "i want coffee");
     assert.equal(mapped.correction.naturalText, "I want coffee, please.");
-    assert.deepEqual(mapped.correction.explanation.why, ["Use polite wording."]);
+    assert.equal(mapped.correction.explanation.translationUk, "Я хочу кави, будь ласка.");
+    assert.deepEqual(mapped.correction.explanation.why, [
+      "Цей варіант звучить ввічливіше і природніше для розмови."
+    ]);
     assert.deepEqual(mapped.correction.suggestions.phrases, [
       "Could I get a coffee?",
-      "Thanks!"
+      "Thanks a lot"
     ]);
     assert.deepEqual(mapped.safety.flags, ["minor"]);
     assert.equal(mapped.savedPhrases.length, 2);
@@ -106,6 +112,7 @@ describe("anti-corruption mapper", () => {
         correction: {
           original: "i want coffee",
           natural: "I want coffee.",
+          translationUk: "Я хочу кави.",
           why: ["   ", "   "]
         }
       })
@@ -114,7 +121,36 @@ describe("anti-corruption mapper", () => {
     assert.equal(mapped.correction.explanation.why.length, 1);
     assert.match(
       mapped.correction.explanation.why[0] ?? "",
-      /normalized due to invalid explanation/i
+      /Пояснення було відновлено автоматично/i
+    );
+  });
+
+  test("filters low-quality phrases before saving", () => {
+    const mapped = mapAiPayloadToDomain({
+      job: buildJob(),
+      aiPayload: buildAiPayload({
+        correction: {
+          original: "my name is andrew and i want to talk with you",
+          natural: "My name is Andrew, and I want to talk with you about my English.",
+          translationUk: "Мене звати Андрій, і я хочу поговорити з тобою про свою англійську.",
+          why: ["Smoother phrasing for conversation."]
+        },
+        phrases: [
+          "My name is Andrew, and I want to talk with you about my English.",
+          "want to talk",
+          "Thanks!",
+          "you don't mind, do you?"
+        ]
+      })
+    });
+
+    assert.deepEqual(mapped.correction.suggestions.phrases, [
+      "want to talk",
+      "you don't mind, do you?"
+    ]);
+    assert.deepEqual(
+      mapped.savedPhrases.map((item) => item.phrase),
+      ["want to talk", "you don't mind, do you?"]
     );
   });
 });

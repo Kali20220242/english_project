@@ -1,7 +1,11 @@
 import { PubSub } from "@google-cloud/pubsub";
 import { RoleplayTurnJobSchema, type RoleplayTurnJob } from "@neontalk/contracts";
 
-const roleplayTopicName = process.env.PUBSUB_ROLEPLAY_TURNS_TOPIC ?? null;
+const rawRoleplayTopicName = process.env.PUBSUB_ROLEPLAY_TURNS_TOPIC?.trim();
+const roleplayTopicName =
+  rawRoleplayTopicName && rawRoleplayTopicName.length > 0
+    ? rawRoleplayTopicName
+    : null;
 const googleCloudProjectId =
   process.env.GOOGLE_CLOUD_PROJECT ?? process.env.GCLOUD_PROJECT ?? null;
 

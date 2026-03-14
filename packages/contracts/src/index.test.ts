@@ -20,6 +20,32 @@ describe("contracts schemas", () => {
     assert.equal(parsed.success, false);
   });
 
+  test("CreateSessionSchema rejects invalid aiModel format", () => {
+    const parsed = CreateSessionSchema.safeParse({
+      scenarioId: "scenario_ok",
+      level: "B1",
+      personaStyle: "confident",
+      nativeLanguage: "uk",
+      timezone: "Europe/Kiev",
+      aiModel: "gpt-4.1-mini;DROP_TABLE"
+    });
+
+    assert.equal(parsed.success, false);
+  });
+
+  test("CreateSessionSchema accepts claude model id", () => {
+    const parsed = CreateSessionSchema.safeParse({
+      scenarioId: "scenario_ok",
+      level: "B1",
+      personaStyle: "confident",
+      nativeLanguage: "uk",
+      timezone: "Europe/Kiev",
+      aiModel: "claude-3-7-sonnet-20250219"
+    });
+
+    assert.equal(parsed.success, true);
+  });
+
   test("SubmitTurnSchema rejects non-user role and invalid uuid", () => {
     const parsed = SubmitTurnSchema.safeParse({
       sessionId: "sess_123",
@@ -43,7 +69,8 @@ describe("contracts schemas", () => {
       correction: {
         original: "i am fine",
         natural: "I am fine.",
-        why: ["Capitalize sentence start."]
+        translationUk: "Я в порядку.",
+        why: ["Речення починається з великої літери."]
       },
       safety: {
         blocked: false,

@@ -1,0 +1,35 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - services/api/Dockerfile.cloudrun
+      - -t
+      - ${_API_IMAGE}
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_API_IMAGE}
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - services/ai-worker/Dockerfile.cloudrun
+      - -t
+      - ${_WORKER_IMAGE}
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_WORKER_IMAGE}
+
+images:
+  - ${_API_IMAGE}
+  - ${_WORKER_IMAGE}
+
+options:
+  logging: CLOUD_LOGGING_ONLY

@@ -8,11 +8,13 @@ import {
 } from "../lib/active-session-state";
 import { buildApiHeaders } from "../lib/api-request";
 import { useAuth } from "./auth-provider";
+import { useLocale } from "./locale-provider";
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 const pollIntervalMs = 1200;
 const maxWhyItems = 6;
 const maxWhyLength = 280;
+const maxTranslationLength = 2000;
 const maxSuggestedPhrases = 8;
 const maxPhraseLength = 120;
 
@@ -45,6 +47,7 @@ type ChatMessage = {
   createdAt: string;
   correction: {
     naturalText: string;
+    translationUk: string;
     why: string[];
     suggestions: string[];
   } | null;
@@ -134,11 +137,18 @@ function normalizeCorrection(input: ApiMessageCorrection) {
   }
 
   const naturalText = normalizeLine(input.naturalText, 2000);
+  const explanationObject =
+    input.explanation && typeof input.explanation === "object"
+      ? (input.explanation as { why?: unknown; translationUk?: unknown })
+      : null;
+  const translationUkRaw = normalizeLine(
+    explanationObject?.translationUk,
+    maxTranslationLength
+  );
+  const translationUk = translationUkRaw || naturalText;
   const explanationSource =
-    input.explanation &&
-    typeof input.explanation === "object" &&
-    "why" in input.explanation
-      ? (input.explanation as { why?: unknown }).why
+    explanationObject && "why" in explanationObject
+      ? explanationObject.why
       : input.explanation;
   const why = normalizeUniqueLines(explanationSource, {
     maxItems: maxWhyItems,
@@ -155,12 +165,13 @@ function normalizeCorrection(input: ApiMessageCorrection) {
     maxLength: maxPhraseLength
   });
 
-  if (!naturalText && why.length === 0 && suggestions.length === 0) {
+  if (!naturalText && !translationUk && why.length === 0 && suggestions.length === 0) {
     return null;
   }
 
   return {
     naturalText,
+    translationUk,
     why,
     suggestions
   };
@@ -212,12 +223,12 @@ function mapApiMessagesToChat(items: ApiSessionMessage[]) {
   );
 }
 
-function buildPendingPlaceholder(nextSeq: number): ChatMessage {
+function buildPendingPlaceholder(nextSeq: number, locale: "uk" | "en"): ChatMessage {
   return {
     id: `pending-${nextSeq}`,
     seq: nextSeq,
     role: "ASSISTANT",
-    text: "Assistant is thinking...",
+    text: locale === "uk" ? "Асистент думає..." : "Assistant is thinking...",
     createdAt: new Date().toISOString(),
     correction: null,
     optimistic: true
@@ -226,6 +237,8 @@ function buildPendingPlaceholder(nextSeq: number): ChatMessage {
 
 export function RoleplayChat() {
   const { user, getIdToken } = useAuth();
+  const { locale } = useLocale();
+  const isUkrainian = locale === "uk";
   const [activeSession, setActiveSession] = useState<ActiveSessionState | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
@@ -260,7 +273,9 @@ export function RoleplayChat() {
     const token = await getIdToken();
 
     if (!token) {
-      throw new Error("Could not get Firebase ID token.");
+      throw new Error(
+        isUkrainian ? "Не вдалося отримати Firebase ID token." : "Could not get Firebase ID token."
+      );
     }
 
     if (!input.silent) {
@@ -288,7 +303,12 @@ export function RoleplayChat() {
 
       if (!response.ok) {
         throw new Error(
-          resolveApiError(payload, `Failed to load messages (${response.status}).`)
+          resolveApiError(
+            payload,
+            isUkrainian
+              ? `Не вдалося завантажити повідомлення (${response.status}).`
+              : `Failed to load messages (${response.status}).`
+          )
         );
       }
 
@@ -313,7 +333,11 @@ export function RoleplayChat() {
     }).catch((error) => {
       setStatusKind("error");
       setStatusMessage(
-        error instanceof Error ? error.message : "Failed to load chat messages."
+        error instanceof Error
+          ? error.message
+          : isUkrainian
+            ? "Не вдалося завантажити повідомлення чату."
+            : "Failed to load chat messages."
       );
     });
   }, [user, activeSession?.sessionId]);
@@ -345,7 +369,7 @@ export function RoleplayChat() {
             setPendingUserSeq(null);
             setIsSending(false);
             setStatusKind("ok");
-            setStatusMessage("Assistant answered.");
+            setStatusMessage(isUkrainian ? "Асистент відповів." : "Assistant answered.");
           });
         }
       } catch (error) {
@@ -355,12 +379,14 @@ export function RoleplayChat() {
 
         startTransition(() => {
           setStatusKind("error");
-          setStatusMessage(
-            error instanceof Error
-              ? error.message
-              : "Polling failed while waiting for assistant turn."
-          );
-        });
+            setStatusMessage(
+              error instanceof Error
+                ? error.message
+                : isUkrainian
+                  ? "Помилка полінгу під час очікування відповіді асистента."
+                  : "Polling failed while waiting for assistant turn."
+            );
+          });
       }
     };
 
@@ -378,19 +404,27 @@ export function RoleplayChat() {
   async function submitTurn() {
     if (!activeSession?.sessionId) {
       setStatusKind("error");
-      setStatusMessage("Start a scenario session first.");
+      setStatusMessage(
+        isUkrainian ? "Спочатку запусти сесію сценарію." : "Start a scenario session first."
+      );
       return;
     }
 
     if (!draft.trim()) {
       setStatusKind("error");
-      setStatusMessage("Type your turn first.");
+      setStatusMessage(
+        isUkrainian ? "Спочатку введи свою репліку." : "Type your turn first."
+      );
       return;
     }
 
     if (pendingUserSeq !== null || isSending) {
       setStatusKind("error");
-      setStatusMessage("Wait for the assistant response before sending next turn.");
+      setStatusMessage(
+        isUkrainian
+          ? "Дочекайся відповіді асистента перед наступною реплікою."
+          : "Wait for the assistant response before sending next turn."
+      );
       return;
     }
 
@@ -398,7 +432,9 @@ export function RoleplayChat() {
 
     if (!token) {
       setStatusKind("error");
-      setStatusMessage("Could not get Firebase ID token.");
+      setStatusMessage(
+        isUkrainian ? "Не вдалося отримати Firebase ID token." : "Could not get Firebase ID token."
+      );
       return;
     }
 
@@ -413,7 +449,7 @@ export function RoleplayChat() {
     setDraft("");
     setPendingUserSeq(nextSeq);
     setStatusKind("idle");
-    setStatusMessage("Sending turn...");
+    setStatusMessage(isUkrainian ? "Надсилаємо репліку..." : "Sending turn...");
     setMessages((previous) =>
       mergeMessages(previous, [
         {
@@ -463,7 +499,12 @@ export function RoleplayChat() {
         setIsSending(false);
         setStatusKind("error");
         setStatusMessage(
-          resolveApiError(payload, `Failed to submit message (${response.status}).`)
+          resolveApiError(
+            payload,
+            isUkrainian
+              ? `Не вдалося надіслати повідомлення (${response.status}).`
+              : `Failed to submit message (${response.status}).`
+          )
         );
         return;
       }
@@ -473,7 +514,11 @@ export function RoleplayChat() {
         silent: true
       });
       setStatusKind("ok");
-      setStatusMessage("Turn accepted. Waiting for assistant...");
+      setStatusMessage(
+        isUkrainian
+          ? "Репліку прийнято. Очікуємо відповідь асистента..."
+          : "Turn accepted. Waiting for assistant..."
+      );
     } catch (error) {
       setMessages((previous) =>
         previous.filter((item) => item.seq !== nextSeq || !item.optimistic)
@@ -482,7 +527,11 @@ export function RoleplayChat() {
       setIsSending(false);
       setStatusKind("error");
       setStatusMessage(
-        error instanceof Error ? error.message : "Network error while sending turn."
+        error instanceof Error
+          ? error.message
+          : isUkrainian
+            ? "Мережева помилка під час надсилання репліки."
+            : "Network error while sending turn."
       );
     }
   }
@@ -490,13 +539,19 @@ export function RoleplayChat() {
   async function savePhrase(input: { message: ChatMessage; phrase: string }) {
     if (!activeSession?.sessionId) {
       setStatusKind("error");
-      setStatusMessage("Start a scenario session first.");
+      setStatusMessage(
+        isUkrainian ? "Спочатку запусти сесію сценарію." : "Start a scenario session first."
+      );
       return;
     }
 
     if (!user) {
       setStatusKind("error");
-      setStatusMessage("Sign in first to save phrases.");
+      setStatusMessage(
+        isUkrainian
+          ? "Спочатку увійди в акаунт, щоб зберігати фрази."
+          : "Sign in first to save phrases."
+      );
       return;
     }
 
@@ -504,7 +559,7 @@ export function RoleplayChat() {
 
     if (!phrase) {
       setStatusKind("error");
-      setStatusMessage("Phrase text is empty.");
+      setStatusMessage(isUkrainian ? "Текст фрази порожній." : "Phrase text is empty.");
       return;
     }
 
@@ -512,7 +567,9 @@ export function RoleplayChat() {
 
     if (savedPhraseKeys.includes(phraseKey)) {
       setStatusKind("ok");
-      setStatusMessage("Phrase already saved in this chat.");
+      setStatusMessage(
+        isUkrainian ? "Фраза вже збережена в цьому чаті." : "Phrase already saved in this chat."
+      );
       return;
     }
 
@@ -520,7 +577,9 @@ export function RoleplayChat() {
 
     if (!token) {
       setStatusKind("error");
-      setStatusMessage("Could not get Firebase ID token.");
+      setStatusMessage(
+        isUkrainian ? "Не вдалося отримати Firebase ID token." : "Could not get Firebase ID token."
+      );
       return;
     }
 
@@ -552,7 +611,12 @@ export function RoleplayChat() {
       if (!response.ok) {
         setStatusKind("error");
         setStatusMessage(
-          resolveApiError(payload, `Failed to save phrase (${response.status}).`)
+          resolveApiError(
+            payload,
+            isUkrainian
+              ? `Не вдалося зберегти фразу (${response.status}).`
+              : `Failed to save phrase (${response.status}).`
+          )
         );
         return;
       }
@@ -561,11 +625,17 @@ export function RoleplayChat() {
         previous.includes(phraseKey) ? previous : [...previous, phraseKey]
       );
       setStatusKind("ok");
-      setStatusMessage("Phrase saved to Phrase Vault.");
+      setStatusMessage(
+        isUkrainian ? "Фразу збережено у Phrase Vault." : "Phrase saved to Phrase Vault."
+      );
     } catch (error) {
       setStatusKind("error");
       setStatusMessage(
-        error instanceof Error ? error.message : "Network error while saving phrase."
+        error instanceof Error
+          ? error.message
+          : isUkrainian
+            ? "Мережева помилка під час збереження фрази."
+            : "Network error while saving phrase."
       );
     } finally {
       setSavingPhraseKey(null);
@@ -578,13 +648,17 @@ export function RoleplayChat() {
       (message) => message.role === "ASSISTANT" && message.seq > pendingUserSeq
     );
   const displayedMessages = showPendingAssistant
-    ? [...messages, buildPendingPlaceholder(pendingUserSeq + 1)]
+    ? [...messages, buildPendingPlaceholder(pendingUserSeq + 1, locale)]
     : messages;
 
   if (!user) {
     return (
       <div className="chat-panel">
-        <p className="chat-status">Sign in first to open the roleplay chat.</p>
+        <p className="chat-status">
+          {isUkrainian
+            ? "Спочатку увійди в акаунт, щоб відкрити рольовий чат."
+            : "Sign in first to open the roleplay chat."}
+        </p>
       </div>
     );
   }
@@ -593,7 +667,9 @@ export function RoleplayChat() {
     return (
       <div className="chat-panel">
         <p className="chat-status">
-          Start a scenario session in Scenario Picker to unlock the chat screen.
+          {isUkrainian
+            ? "Запусти сесію в блоці вибору сценарію, щоб відкрити чат."
+            : "Start a scenario session in Scenario Picker to unlock the chat screen."}
         </p>
       </div>
     );
@@ -603,26 +679,32 @@ export function RoleplayChat() {
     <div className="chat-panel">
       <div className="chat-meta">
         <p>
-          <strong>Session:</strong> <code>{activeSession.sessionId}</code>
+          <strong>{isUkrainian ? "Сесія:" : "Session:"}</strong>{" "}
+          <code>{activeSession.sessionId}</code>
         </p>
         <p>
-          <strong>Scenario:</strong> {activeSession.scenario.title}
+          <strong>{isUkrainian ? "Сценарій:" : "Scenario:"}</strong>{" "}
+          {activeSession.scenario.title}
         </p>
         <button
           className="auth-button secondary"
           type="button"
           onClick={refreshActiveSession}
         >
-          Refresh active session
+          {isUkrainian ? "Оновити активну сесію" : "Refresh active session"}
         </button>
       </div>
 
       <div className="chat-window" aria-live="polite">
         {isLoading && messages.length === 0 ? (
-          <p className="chat-empty">Loading chat history...</p>
+          <p className="chat-empty">
+            {isUkrainian ? "Завантаження історії чату..." : "Loading chat history..."}
+          </p>
         ) : displayedMessages.length === 0 ? (
           <p className="chat-empty">
-            Send your first turn. Assistant response will appear here.
+            {isUkrainian
+              ? "Надішли першу репліку. Відповідь асистента з’явиться тут."
+              : "Send your first turn. Assistant response will appear here."}
           </p>
         ) : (
           displayedMessages.map((message) => (
@@ -633,24 +715,52 @@ export function RoleplayChat() {
               }${message.optimistic ? " pending" : ""}`}
             >
               <header>
-                <span>{message.role === "USER" ? "You" : "Assistant"}</span>
+                <span>
+                  {message.role === "USER"
+                    ? isUkrainian
+                      ? "Ти"
+                      : "You"
+                    : isUkrainian
+                      ? "Асистент"
+                      : "Assistant"}
+                </span>
                 <small>#{message.seq}</small>
               </header>
               <p>{message.text}</p>
               {message.role === "ASSISTANT" && message.correction ? (
-                <section className="chat-rewrite" aria-label="Natural rewrite and why">
+                <section
+                  className="chat-rewrite"
+                  aria-label={
+                    isUkrainian
+                      ? "Природне перефразування, переклад і пояснення"
+                      : "Natural rewrite, translation, and why"
+                  }
+                >
                   {message.correction.naturalText ? (
                     <>
-                      <p className="chat-rewrite-title">Natural rewrite</p>
+                      <p className="chat-rewrite-title">
+                        {isUkrainian ? "Природний варіант" : "Natural rewrite"}
+                      </p>
                       <p className="chat-rewrite-text">
                         {message.correction.naturalText}
                       </p>
                     </>
                   ) : null}
 
+                  {message.correction.translationUk ? (
+                    <>
+                      <p className="chat-rewrite-title">
+                        {isUkrainian ? "Переклад українською" : "Ukrainian translation"}
+                      </p>
+                      <p className="chat-rewrite-text">
+                        {message.correction.translationUk}
+                      </p>
+                    </>
+                  ) : null}
+
                   {message.correction.why.length > 0 ? (
                     <>
-                      <p className="chat-rewrite-title">Why</p>
+                      <p className="chat-rewrite-title">{isUkrainian ? "Чому" : "Why"}</p>
                       <ul className="chat-why-list">
                         {message.correction.why.map((item) => (
                           <li key={`${message.id}-${item}`}>{item}</li>
@@ -661,7 +771,9 @@ export function RoleplayChat() {
 
                   {collectSaveCandidates(message).length > 0 ? (
                     <>
-                      <p className="chat-rewrite-title">Save phrase</p>
+                      <p className="chat-rewrite-title">
+                        {isUkrainian ? "Зберегти фразу" : "Save phrase"}
+                      </p>
                       <div className="chat-save-phrase-grid">
                         {collectSaveCandidates(message).map((phrase) => {
                           const phraseKey = buildSavedPhraseKey(message.id, phrase);
@@ -681,7 +793,19 @@ export function RoleplayChat() {
                               }}
                               disabled={isSaving || isSaved}
                             >
-                              <strong>{isSaved ? "Saved" : isSaving ? "Saving..." : "Save"}</strong>{" "}
+                              <strong>
+                                {isSaved
+                                  ? isUkrainian
+                                    ? "Збережено"
+                                    : "Saved"
+                                  : isSaving
+                                    ? isUkrainian
+                                      ? "Збереження..."
+                                      : "Saving..."
+                                    : isUkrainian
+                                      ? "Зберегти"
+                                      : "Save"}
+                              </strong>{" "}
                               <span>{phrase}</span>
                             </button>
                           );
@@ -700,7 +824,7 @@ export function RoleplayChat() {
         <textarea
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder="Write your turn here..."
+          placeholder={isUkrainian ? "Напиши свою репліку тут..." : "Write your turn here..."}
           rows={3}
           disabled={isSending}
         />
@@ -710,7 +834,13 @@ export function RoleplayChat() {
           onClick={submitTurn}
           disabled={isSending || !draft.trim()}
         >
-          {isSending ? "Sending..." : "Send turn"}
+          {isSending
+            ? isUkrainian
+              ? "Надсилання..."
+              : "Sending..."
+            : isUkrainian
+              ? "Надіслати репліку"
+              : "Send turn"}
         </button>
       </div>
 

@@ -13,6 +13,10 @@ const MAX_FLAGS = 10;
 const MAX_FLAG_LENGTH = 64;
 const MAX_SAVED_PHRASES = 8;
 const MAX_PHRASE_LENGTH = 120;
+const MIN_PHRASE_LENGTH = 4;
+const MIN_PHRASE_WORDS = 2;
+const MAX_PHRASE_WORDS = 8;
+const CYRILLIC_PATTERN = /[А-Яа-яІіЇїЄєҐґ]/;
 
 export class AntiCorruptionMapperError extends Error {
   readonly code:
@@ -58,6 +62,7 @@ export type DomainRoleplayTurn = {
     originalText: string;
     naturalText: string;
     explanation: {
+      translationUk: string;
       why: string[];
       flags: string[];
       blocked: boolean;
@@ -123,6 +128,98 @@ function uniqueNormalizedList(
   return output;
 }
 
+function mapEnglishRuleHintToUkrainian(input: string) {
+  const normalized = input.toLowerCase();
+
+  if (
+    normalized.includes("capital letter") ||
+    normalized.includes("uppercase")
+  ) {
+    return "Речення в англійській мові зазвичай починається з великої літери.";
+  }
+
+  if (
+    normalized.includes("article") ||
+    normalized.includes("a/an/the")
+  ) {
+    return "Тут потрібно правильно підібрати артикль a/an/the.";
+  }
+
+  if (
+    normalized.includes("tense") ||
+    normalized.includes("past") ||
+    normalized.includes("present") ||
+    normalized.includes("future")
+  ) {
+    return "Потрібно узгодити час дієслова з контекстом речення.";
+  }
+
+  if (normalized.includes("preposition")) {
+    return "Тут потрібен правильний прийменник, щоб фраза звучала природно.";
+  }
+
+  if (normalized.includes("word order")) {
+    return "У цьому місці важливий правильний порядок слів у реченні.";
+  }
+
+  if (normalized.includes("polite")) {
+    return "Цей варіант звучить ввічливіше і природніше для розмови.";
+  }
+
+  if (
+    normalized.includes("natural") ||
+    normalized.includes("native")
+  ) {
+    return "Цей варіант природніше звучить у живому спілкуванні.";
+  }
+
+  return "Ця форма граматично правильніша й природніше звучить у цьому контексті.";
+}
+
+function localizeWhyLinesToUkrainian(input: string[]) {
+  const cleaned = uniqueNormalizedList(
+    input,
+    MAX_WHY_ITEMS * 3,
+    MAX_WHY_ITEM_LENGTH
+  );
+
+  return uniqueNormalizedList(
+    cleaned.map((line) =>
+      CYRILLIC_PATTERN.test(line)
+        ? line
+        : mapEnglishRuleHintToUkrainian(line)
+    ),
+    MAX_WHY_ITEMS,
+    MAX_WHY_ITEM_LENGTH
+  );
+}
+
+function countPhraseWords(input: string) {
+  const words = input.match(/[\p{L}\p{N}]+(?:['’-][\p{L}\p{N}]+)*/gu);
+  return words?.length ?? 0;
+}
+
+function isPhraseCandidate(input: { phrase: string; context: string }) {
+  const phrase = input.phrase;
+  const context = normalizeWhitespace(input.context);
+
+  if (!phrase || phrase.length < MIN_PHRASE_LENGTH) {
+    return false;
+  }
+
+  if (phrase.toLowerCase() === context.toLowerCase()) {
+    return false;
+  }
+
+  const wordCount = countPhraseWords(phrase);
+
+  if (wordCount < MIN_PHRASE_WORDS || wordCount > MAX_PHRASE_WORDS) {
+    return false;
+  }
+
+  return true;
+}
+
 function mapSavedPhrases(input: {
   userId: string;
   sessionId: string;
@@ -133,6 +230,11 @@ function mapSavedPhrases(input: {
     input.phrases,
     MAX_SAVED_PHRASES,
     MAX_PHRASE_LENGTH
+  ).filter((phrase) =>
+    isPhraseCandidate({
+      phrase,
+      context: input.naturalText
+    })
   );
 
   return phrases.map((phrase) => ({
@@ -175,6 +277,13 @@ function ensureDomainPayload(payload: DomainRoleplayTurn) {
     throw new AntiCorruptionMapperError(
       "INVALID_MAPPED_RESULT",
       "Mapped correction naturalText is empty."
+    );
+  }
+
+  if (!payload.correction.explanation.translationUk) {
+    throw new AntiCorruptionMapperError(
+      "INVALID_MAPPED_RESULT",
+      "Mapped correction translationUk is empty."
     );
   }
 
@@ -221,20 +330,23 @@ export function mapAiPayloadToDomain(input: {
     MAX_CORRECTION_TEXT_LENGTH
   );
   const naturalText = naturalTextRaw || originalText;
+  const translationUkRaw = normalizeText(
+    aiPayload.correction.translationUk,
+    MAX_CORRECTION_TEXT_LENGTH
+  );
+  const translationUk = translationUkRaw || naturalText;
   const assistantTextRaw = normalizeText(
     aiPayload.assistantReply,
     MAX_ASSISTANT_TEXT_LENGTH
   );
   const assistantText = assistantTextRaw || naturalText;
-  const why = uniqueNormalizedList(
+  const why = localizeWhyLinesToUkrainian(
     aiPayload.correction.why,
-    MAX_WHY_ITEMS,
-    MAX_WHY_ITEM_LENGTH
   );
   const explanation =
     why.length > 0
       ? why
-      : ["The assistant response was normalized due to invalid explanation."];
+      : ["Пояснення було відновлено автоматично через некоректний формат відповіді моделі."];
   const flags = uniqueNormalizedList(
     aiPayload.safety.flags,
     MAX_FLAGS,
@@ -272,6 +384,7 @@ export function mapAiPayloadToDomain(input: {
       originalText,
       naturalText,
       explanation: {
+        translationUk,
         why: explanation,
         flags,
         blocked: aiPayload.safety.blocked

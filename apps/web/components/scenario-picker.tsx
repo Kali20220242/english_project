@@ -10,6 +10,7 @@ import {
   type OnboardingState
 } from "../lib/onboarding-state";
 import { useAuth } from "./auth-provider";
+import { useLocale } from "./locale-provider";
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 
@@ -27,7 +28,9 @@ type CreateSessionResponse = {
     personaStyle: string;
     nativeLanguage: string;
     timezone: string;
+    aiModel: string;
   };
+  aiModel: string;
 };
 
 function resolveApiError(payload: unknown, fallback: string) {
@@ -46,12 +49,31 @@ function resolveApiError(payload: unknown, fallback: string) {
   return fallback;
 }
 
-function formatGoals(goals: string[]) {
-  return goals.map((goal) => goal.replace(/_/g, " ")).join(", ");
+function formatGoals(goals: string[], locale: "uk" | "en") {
+  const ukrainianLabels: Record<string, string> = {
+    dating: "знайомства",
+    travel: "подорожі",
+    work: "робота",
+    smalltalk: "small talk",
+    interview: "співбесіда",
+    grammar: "граматика"
+  };
+
+  return goals
+    .map((goal) => {
+      if (locale === "uk") {
+        return ukrainianLabels[goal] ?? goal.replace(/_/g, " ");
+      }
+
+      return goal.replace(/_/g, " ");
+    })
+    .join(", ");
 }
 
 export function ScenarioPicker() {
   const { user, getIdToken } = useAuth();
+  const { locale } = useLocale();
+  const isUkrainian = locale === "uk";
   const [selectedScenarioSlug, setSelectedScenarioSlug] = useState(
     scenarioCatalog[0]?.slug ?? ""
   );
@@ -80,13 +102,19 @@ export function ScenarioPicker() {
   async function createSession() {
     if (!selectedScenario) {
       setStatusKind("error");
-      setStatusMessage("Pick a scenario first.");
+      setStatusMessage(
+        isUkrainian ? "Спочатку обери сценарій." : "Pick a scenario first."
+      );
       return;
     }
 
     if (!user) {
       setStatusKind("error");
-      setStatusMessage("Sign in first to start a scenario session.");
+      setStatusMessage(
+        isUkrainian
+          ? "Спочатку увійди в акаунт, щоб запустити сесію."
+          : "Sign in first to start a scenario session."
+      );
       return;
     }
 
@@ -94,7 +122,9 @@ export function ScenarioPicker() {
 
     if (!token) {
       setStatusKind("error");
-      setStatusMessage("Could not get Firebase ID token.");
+      setStatusMessage(
+        isUkrainian ? "Не вдалося отримати Firebase ID token." : "Could not get Firebase ID token."
+      );
       return;
     }
 
@@ -103,13 +133,17 @@ export function ScenarioPicker() {
 
     if (onboarding.goals.length === 0) {
       setStatusKind("error");
-      setStatusMessage("Save onboarding with at least one learning goal.");
+      setStatusMessage(
+        isUkrainian
+          ? "Збережи онбординг хоча б з однією навчальною ціллю."
+          : "Save onboarding with at least one learning goal."
+      );
       return;
     }
 
     setIsSubmitting(true);
     setStatusKind("idle");
-    setStatusMessage("Creating session...");
+    setStatusMessage(isUkrainian ? "Створюємо сесію..." : "Creating session...");
 
     try {
       const response = await fetch(`${apiBaseUrl}/v1/sessions`, {
@@ -123,7 +157,8 @@ export function ScenarioPicker() {
           level: onboarding.level,
           personaStyle: onboarding.personaStyle,
           nativeLanguage: onboarding.nativeLanguage,
-          timezone: onboarding.timezone
+          timezone: onboarding.timezone,
+          aiModel: onboarding.aiModel
         })
       });
 
@@ -138,7 +173,12 @@ export function ScenarioPicker() {
       if (!response.ok) {
         setStatusKind("error");
         setStatusMessage(
-          resolveApiError(payload, `Session create failed (${response.status}).`)
+          resolveApiError(
+            payload,
+            isUkrainian
+              ? `Не вдалося створити сесію (${response.status}).`
+              : `Session create failed (${response.status}).`
+          )
         );
         return;
       }
@@ -154,14 +194,18 @@ export function ScenarioPicker() {
         });
       setStatusKind("ok");
       setStatusMessage(
-        `Session ${result.sessionId} started for ${result.scenario.title}.`
+        isUkrainian
+          ? `Сесію ${result.sessionId} для "${result.scenario.title}" запущено.`
+          : `Session ${result.sessionId} started for ${result.scenario.title}.`
       );
     } catch (error) {
       setStatusKind("error");
       setStatusMessage(
         error instanceof Error
           ? error.message
-          : "Network error while creating session."
+          : isUkrainian
+            ? "Мережева помилка під час створення сесії."
+            : "Network error while creating session."
       );
     } finally {
       setIsSubmitting(false);
@@ -172,7 +216,9 @@ export function ScenarioPicker() {
     return (
       <div className="scenario-picker">
         <p className="scenario-status">
-          Sign in first, then choose a scenario to start a session.
+          {isUkrainian
+            ? "Спочатку увійди в акаунт, потім обери сценарій для старту сесії."
+            : "Sign in first, then choose a scenario to start a session."}
         </p>
       </div>
     );
@@ -181,8 +227,9 @@ export function ScenarioPicker() {
   return (
     <div className="scenario-picker">
       <p className="scenario-copy">
-        Pick a live scenario. We will create a new session using your onboarding
-        settings.
+        {isUkrainian
+          ? "Обери живий сценарій. Ми створимо нову сесію з твоїми параметрами онбордингу."
+          : "Pick a live scenario. We will create a new session using your onboarding settings."}
       </p>
 
       <div className="scenario-grid">
@@ -199,7 +246,9 @@ export function ScenarioPicker() {
             <h3>{scenario.title}</h3>
             <p>{scenario.description}</p>
             <div className="scenario-meta">
-              <small>Difficulty: {scenario.difficulty}</small>
+              <small>
+                {isUkrainian ? "Складність" : "Difficulty"}: {scenario.difficulty}
+              </small>
               <small>{scenario.mood}</small>
             </div>
           </button>
@@ -209,15 +258,18 @@ export function ScenarioPicker() {
       {onboardingSnapshot ? (
         <div className="scenario-onboarding">
           <p>
-            <strong>Onboarding snapshot:</strong> {onboardingSnapshot.level},{" "}
+            <strong>{isUkrainian ? "Снепшот онбордингу:" : "Onboarding snapshot:"}</strong>{" "}
+            {onboardingSnapshot.level},{" "}
             {onboardingSnapshot.personaStyle}, {onboardingSnapshot.nativeLanguage},{" "}
-            {onboardingSnapshot.timezone}
+            {onboardingSnapshot.timezone},{" "}
+            {isUkrainian ? "модель" : "model"}: {onboardingSnapshot.aiModel}
           </p>
           <p>
-            <strong>Goals:</strong> {formatGoals(onboardingSnapshot.goals)}
+            <strong>{isUkrainian ? "Цілі:" : "Goals:"}</strong>{" "}
+            {formatGoals(onboardingSnapshot.goals, locale)}
           </p>
           <button className="auth-button secondary" type="button" onClick={refreshOnboardingSnapshot}>
-            Refresh onboarding data
+            {isUkrainian ? "Оновити дані онбордингу" : "Refresh onboarding data"}
           </button>
         </div>
       ) : null}
@@ -228,7 +280,13 @@ export function ScenarioPicker() {
         onClick={createSession}
         disabled={isSubmitting || !selectedScenario}
       >
-        {isSubmitting ? "Starting session..." : "Start scenario session"}
+        {isSubmitting
+          ? isUkrainian
+            ? "Запускаємо сесію..."
+            : "Starting session..."
+          : isUkrainian
+            ? "Запустити сесію сценарію"
+            : "Start scenario session"}
       </button>
 
       {statusMessage ? (
@@ -239,7 +297,8 @@ export function ScenarioPicker() {
 
       {activeSessionId ? (
         <p className="scenario-session">
-          Active session id: <code>{activeSessionId}</code>
+          {isUkrainian ? "ID активної сесії:" : "Active session id:"}{" "}
+          <code>{activeSessionId}</code>
         </p>
       ) : null}
     </div>

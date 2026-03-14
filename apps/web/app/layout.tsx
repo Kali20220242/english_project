@@ -4,6 +4,8 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
 import { AuthProvider } from "../components/auth-provider";
+import { LanguageSwitcher } from "../components/language-switcher";
+import { LocaleProvider } from "../components/locale-provider";
 
 export const metadata: Metadata = {
   title: "NeonTalk",
@@ -16,9 +18,14 @@ type RootLayoutProps = {
 
 export default function RootLayout({ children }: RootLayoutProps) {
   return (
-    <html lang="en">
+    <html lang="uk">
       <body>
-        <AuthProvider>{children}</AuthProvider>
+        <AuthProvider>
+          <LocaleProvider>
+            <LanguageSwitcher />
+            {children}
+          </LocaleProvider>
+        </AuthProvider>
       </body>
     </html>
   );

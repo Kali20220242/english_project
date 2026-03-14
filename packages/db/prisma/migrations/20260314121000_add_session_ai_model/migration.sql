@@ -1,0 +1,2 @@
+ALTER TABLE "Session"
+ADD COLUMN "aiModel" TEXT NOT NULL DEFAULT 'gpt-4.1-mini';

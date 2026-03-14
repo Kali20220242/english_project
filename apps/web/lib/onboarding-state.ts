@@ -1,4 +1,5 @@
 export const ONBOARDING_STORAGE_KEY = "neontalk:onboarding:v1";
+export const DEFAULT_AI_MODEL = "gpt-4.1-mini";
 
 export const englishLevels = ["A1", "A2", "B1", "B2", "C1", "C2"] as const;
 export const personaStyles = [
@@ -6,6 +7,13 @@ export const personaStyles = [
   "confident",
   "playful",
   "professional"
+] as const;
+export const suggestedAiModels = [
+  "gpt-4.1-mini",
+  "gpt-4.1",
+  "gpt-4o-mini",
+  "claude-sonnet-4-20250514",
+  "claude-3-7-sonnet-20250219"
 ] as const;
 
 export const goalOptions = [
@@ -23,6 +31,7 @@ export type OnboardingState = {
   goals: string[];
   nativeLanguage: string;
   timezone: string;
+  aiModel: string;
 };
 
 export const defaultOnboardingState: OnboardingState = {
@@ -30,7 +39,8 @@ export const defaultOnboardingState: OnboardingState = {
   personaStyle: "confident",
   goals: ["smalltalk"],
   nativeLanguage: "uk",
-  timezone: "Europe/Kiev"
+  timezone: "Europe/Kiev",
+  aiModel: DEFAULT_AI_MODEL
 };
 
 export function getBrowserTimezone() {
@@ -67,6 +77,24 @@ function normalizeGoals(value: unknown) {
   return normalized.length > 0 ? normalized : defaultOnboardingState.goals;
 }
 
+function normalizeAiModel(value: unknown) {
+  if (typeof value !== "string") {
+    return defaultOnboardingState.aiModel;
+  }
+
+  const normalized = value.trim().slice(0, 80);
+
+  if (normalized.length < 2) {
+    return defaultOnboardingState.aiModel;
+  }
+
+  if (!/^[a-zA-Z0-9._:-]+$/.test(normalized)) {
+    return defaultOnboardingState.aiModel;
+  }
+
+  return normalized;
+}
+
 export function normalizeOnboardingState(input: Partial<OnboardingState>) {
   const fallbackTimezone = getBrowserTimezone();
 
@@ -89,7 +117,8 @@ export function normalizeOnboardingState(input: Partial<OnboardingState>) {
     timezone:
       typeof input.timezone === "string" && input.timezone.trim()
         ? input.timezone.trim().slice(0, 64)
-        : fallbackTimezone
+        : fallbackTimezone,
+    aiModel: normalizeAiModel(input.aiModel)
   } satisfies OnboardingState;
 }
 

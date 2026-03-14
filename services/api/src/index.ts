@@ -172,6 +172,8 @@ function addSecureResponseHeaders(reply: FastifyReply) {
 
 app.register(cors, {
   credentials: true,
+  methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Authorization", "Content-Type", "X-CSRF-Token"],
   origin(origin, callback) {
     callback(null, isCorsOriginAllowed(origin));
   }
@@ -798,6 +800,94 @@ app.get(
   }
 );
 
+app.delete(
+  "/v1/progress/reset",
+  { preHandler: [verifyFirebaseIdToken, rateLimitSessionWrite] },
+  async (request, reply) => {
+  if (!request.authDbUser || !request.authUser) {
+    return reply.code(401).send({
+      error: "UNAUTHORIZED",
+      message: "Missing authenticated user context."
+    });
+  }
+
+  const userId = request.authDbUser.id;
+  const actor = buildActor(request.authUser.uid);
+  const sessions = await prisma.session.findMany({
+    where: {
+      userId
+    },
+    select: {
+      id: true
+    }
+  });
+  const sessionIds = sessions.map((session) => session.id);
+
+  const resetResult = await prisma.$transaction(async (tx) => {
+    const deletedOutboxEvents =
+      sessionIds.length > 0
+        ? await tx.outboxEvent.deleteMany({
+            where: {
+              sessionId: {
+                in: sessionIds
+              }
+            }
+          })
+        : { count: 0 };
+    const deletedSnapshots = await tx.progressSnapshot.deleteMany({
+      where: {
+        userId
+      }
+    });
+    const deletedSavedPhrases = await tx.savedPhrase.deleteMany({
+      where: {
+        userId
+      }
+    });
+    const deletedIdempotencyKeys = await tx.idempotencyKey.deleteMany({
+      where: {
+        userId
+      }
+    });
+    const deletedSessions = await tx.session.deleteMany({
+      where: {
+        userId
+      }
+    });
+
+    await tx.auditLog.create({
+      data: {
+        userId,
+        actor,
+        action: "PROGRESS_RESET",
+        entityType: "User",
+        entityId: userId,
+        payload: {
+          deletedSnapshots: deletedSnapshots.count,
+          deletedSavedPhrases: deletedSavedPhrases.count,
+          deletedSessions: deletedSessions.count,
+          deletedOutboxEvents: deletedOutboxEvents.count,
+          deletedIdempotencyKeys: deletedIdempotencyKeys.count
+        }
+      }
+    });
+
+    return {
+      deletedSnapshots: deletedSnapshots.count,
+      deletedSavedPhrases: deletedSavedPhrases.count,
+      deletedSessions: deletedSessions.count,
+      deletedOutboxEvents: deletedOutboxEvents.count,
+      deletedIdempotencyKeys: deletedIdempotencyKeys.count
+    };
+  });
+
+  return reply.code(200).send({
+    ok: true,
+    reset: resetResult
+  });
+  }
+);
+
 app.get(
   "/v1/sessions/:id",
   { preHandler: [verifyFirebaseIdToken, rateLimitSessionRead] },
@@ -825,6 +915,7 @@ app.get(
     },
     select: {
       id: true,
+      aiModel: true,
       status: true,
       contextVersion: true,
       startedAt: true,
@@ -1024,6 +1115,7 @@ app.get(
       take: limit,
       select: {
         id: true,
+        aiModel: true,
         status: true,
         contextVersion: true,
         startedAt: true,
@@ -1162,6 +1254,90 @@ app.get(
       sessionId: sessionIdFilter,
       sort
     }
+  });
+  }
+);
+
+app.delete(
+  "/v1/phrases/:id",
+  { preHandler: [verifyFirebaseIdToken, rateLimitMessageWrite] },
+  async (request, reply) => {
+  if (!request.authUser || !request.authDbUser) {
+    return reply.code(401).send({
+      error: "UNAUTHORIZED",
+      message: "Missing authenticated Firebase user context."
+    });
+  }
+
+  const params = request.params as {
+    id?: string;
+  };
+  const phraseId = typeof params.id === "string" ? params.id.trim() : "";
+
+  if (!phraseId) {
+    return reply.code(400).send({
+      error: "INVALID_PHRASE_ID",
+      message: "Phrase id must be provided in URL path."
+    });
+  }
+
+  const authDbUser = request.authDbUser;
+  const authUser = request.authUser;
+  const userId = authDbUser.id;
+  const actor = buildActor(authUser.uid);
+
+  const deletedPhrase = await prisma.$transaction(async (tx) => {
+    const existing = await tx.savedPhrase.findFirst({
+      where: {
+        id: phraseId,
+        userId
+      },
+      select: {
+        id: true,
+        phrase: true,
+        sessionId: true,
+        sourceMessageId: true
+      }
+    });
+
+    if (!existing) {
+      return null;
+    }
+
+    await tx.savedPhrase.delete({
+      where: {
+        id: existing.id
+      }
+    });
+
+    await tx.auditLog.create({
+      data: {
+        userId,
+        actor,
+        action: "SAVED_PHRASE_DELETED",
+        entityType: "SavedPhrase",
+        entityId: existing.id,
+        payload: {
+          phrase: existing.phrase,
+          sessionId: existing.sessionId,
+          sourceMessageId: existing.sourceMessageId
+        }
+      }
+    });
+
+    return existing;
+  });
+
+  if (!deletedPhrase) {
+    return reply.code(404).send({
+      error: "PHRASE_NOT_FOUND",
+      message: "Saved phrase was not found for the current user."
+    });
+  }
+
+  return reply.code(200).send({
+    deleted: true,
+    id: deletedPhrase.id
   });
   }
 );
@@ -1401,10 +1577,12 @@ app.post(
     const createdSession = await tx.session.create({
       data: {
         userId: authDbUser.id,
-        scenarioId: scenario.id
+        scenarioId: scenario.id,
+        aiModel: parsed.data.aiModel
       },
       select: {
         id: true,
+        aiModel: true,
         status: true,
         contextVersion: true,
         startedAt: true,
@@ -1425,7 +1603,8 @@ app.post(
           level: parsed.data.level,
           personaStyle: parsed.data.personaStyle,
           nativeLanguage: parsed.data.nativeLanguage,
-          timezone: parsed.data.timezone
+          timezone: parsed.data.timezone,
+          aiModel: parsed.data.aiModel
         }
       }
     });
@@ -1444,13 +1623,15 @@ app.post(
       title: scenario.title
     },
     contextVersion: session.contextVersion,
+    aiModel: session.aiModel,
     startedAt: session.startedAt,
     createdAt: session.createdAt,
     onboarding: {
       level: parsed.data.level,
       personaStyle: parsed.data.personaStyle,
       nativeLanguage: parsed.data.nativeLanguage,
-      timezone: parsed.data.timezone
+      timezone: parsed.data.timezone,
+      aiModel: session.aiModel
     }
   });
   }
@@ -1488,6 +1669,7 @@ app.post(
       id: true,
       status: true,
       contextVersion: true,
+      aiModel: true,
       scenario: {
         select: {
           id: true,
@@ -1668,7 +1850,8 @@ app.post(
       seq: parsed.data.seq,
       scenarioId: session.scenario.slug,
       inputText: parsed.data.message.text,
-      contextVersion: session.contextVersion
+      contextVersion: session.contextVersion,
+      aiModel: session.aiModel
     });
 
     let persistedTurn: {

@@ -9,10 +9,15 @@ const contentSecurityPolicy = [
   "form-action 'self'",
   "frame-ancestors 'none'",
   "object-src 'none'",
-  `script-src 'self' 'unsafe-inline'${isDevelopment ? " 'unsafe-eval'" : ""}`,
-  "style-src 'self' 'unsafe-inline'",
+  [
+    `script-src 'self' 'unsafe-inline'${isDevelopment ? " 'unsafe-eval'" : ""}`,
+    "https://apis.google.com",
+    "https://www.gstatic.com"
+  ].join(" "),
+  "script-src-elem 'self' 'unsafe-inline' https://apis.google.com https://www.gstatic.com",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "img-src 'self' data: blob: https:",
-  "font-src 'self' data:",
+  "font-src 'self' data: https://fonts.gstatic.com",
   [
     "connect-src 'self'",
     apiBaseUrl,
@@ -27,7 +32,7 @@ const contentSecurityPolicy = [
   ]
     .filter(Boolean)
     .join(" "),
-  "frame-src 'self' https://accounts.google.com https://*.google.com https://*.firebaseapp.com",
+  "frame-src 'self' https://accounts.google.com https://*.google.com https://*.firebaseapp.com https://*.web.app",
   "worker-src 'self' blob:",
   "manifest-src 'self'",
   "media-src 'self'"
@@ -60,7 +65,7 @@ const securityHeaders = [
   },
   {
     key: "Cross-Origin-Opener-Policy",
-    value: "same-origin"
+    value: "same-origin-allow-popups"
   },
   {
     key: "Cross-Origin-Resource-Policy",

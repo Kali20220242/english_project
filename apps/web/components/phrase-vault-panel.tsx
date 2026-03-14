@@ -5,6 +5,7 @@ import { useDeferredValue, useEffect, useState } from "react";
 import { loadActiveSessionState } from "../lib/active-session-state";
 import { buildApiHeaders } from "../lib/api-request";
 import { useAuth } from "./auth-provider";
+import { useLocale } from "./locale-provider";
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 
@@ -70,6 +71,8 @@ function resolveApiError(payload: unknown, fallback: string) {
 
 export function PhraseVaultPanel() {
   const { user, getIdToken } = useAuth();
+  const { locale } = useLocale();
+  const isUkrainian = locale === "uk";
   const [items, setItems] = useState<PhraseVaultItem[]>([]);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -79,6 +82,7 @@ export function PhraseVaultPanel() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sessionOnly, setSessionOnly] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [deletingPhraseId, setDeletingPhraseId] = useState<string | null>(null);
   const [statusKind, setStatusKind] = useState<"idle" | "ok" | "error">("idle");
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
@@ -96,7 +100,9 @@ export function PhraseVaultPanel() {
 
     if (!token) {
       setStatusKind("error");
-      setStatusMessage("Could not get Firebase ID token.");
+      setStatusMessage(
+        isUkrainian ? "Не вдалося отримати Firebase ID token." : "Could not get Firebase ID token."
+      );
       return;
     }
 
@@ -134,7 +140,12 @@ export function PhraseVaultPanel() {
 
       if (!response.ok) {
         throw new Error(
-          resolveApiError(payload, `Failed to load phrase vault (${response.status}).`)
+          resolveApiError(
+            payload,
+            isUkrainian
+              ? `Не вдалося завантажити Phrase Vault (${response.status}).`
+              : `Failed to load phrase vault (${response.status}).`
+          )
         );
       }
 
@@ -143,14 +154,98 @@ export function PhraseVaultPanel() {
       setPage(result.pagination.page);
       setTotalPages(result.pagination.totalPages);
       setStatusKind("ok");
-      setStatusMessage(`Loaded ${result.items.length} phrase(s).`);
+      setStatusMessage(
+        isUkrainian
+          ? `Завантажено фраз: ${result.items.length}.`
+          : `Loaded ${result.items.length} phrase(s).`
+      );
     } catch (error) {
       setStatusKind("error");
       setStatusMessage(
-        error instanceof Error ? error.message : "Failed to load phrase vault."
+        error instanceof Error
+          ? error.message
+          : isUkrainian
+            ? "Не вдалося завантажити Phrase Vault."
+            : "Failed to load phrase vault."
       );
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  async function deletePhrase(item: PhraseVaultItem) {
+    if (!user) {
+      return;
+    }
+
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(
+        isUkrainian
+          ? `Видалити фразу "${item.phrase}" зі словника?`
+          : `Delete phrase "${item.phrase}" from your vault?`
+      )
+    ) {
+      return;
+    }
+
+    const token = await getIdToken();
+
+    if (!token) {
+      setStatusKind("error");
+      setStatusMessage(
+        isUkrainian ? "Не вдалося отримати Firebase ID token." : "Could not get Firebase ID token."
+      );
+      return;
+    }
+
+    const nextPage = items.length === 1 ? Math.max(1, page - 1) : page;
+    setDeletingPhraseId(item.id);
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/v1/phrases/${item.id}`, {
+        method: "DELETE",
+        headers: buildApiHeaders({
+          token
+        })
+      });
+
+      let payload: unknown = null;
+
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          resolveApiError(
+            payload,
+            isUkrainian
+              ? `Не вдалося видалити фразу (${response.status}).`
+              : `Failed to delete phrase (${response.status}).`
+          )
+        );
+      }
+
+      setStatusKind("ok");
+      setStatusMessage(
+        isUkrainian ? "Фразу видалено зі словника." : "Phrase removed from vault."
+      );
+      setItems((previous) => previous.filter((phrase) => phrase.id !== item.id));
+      await fetchPhrases(nextPage);
+    } catch (error) {
+      setStatusKind("error");
+      setStatusMessage(
+        error instanceof Error
+          ? error.message
+          : isUkrainian
+            ? "Не вдалося видалити фразу."
+            : "Failed to delete phrase."
+      );
+    } finally {
+      setDeletingPhraseId(null);
     }
   }
 
@@ -166,7 +261,11 @@ export function PhraseVaultPanel() {
   if (!user) {
     return (
       <div className="vault-panel">
-        <p className="vault-status">Sign in first to view your Phrase Vault.</p>
+        <p className="vault-status">
+          {isUkrainian
+            ? "Спочатку увійди в акаунт, щоб переглянути Phrase Vault."
+            : "Sign in first to view your Phrase Vault."}
+        </p>
       </div>
     );
   }
@@ -177,25 +276,25 @@ export function PhraseVaultPanel() {
     <div className="vault-panel">
       <div className="vault-controls">
         <label className="vault-field">
-          <span>Search phrase</span>
+          <span>{isUkrainian ? "Пошук фрази" : "Search phrase"}</span>
           <input
             type="text"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="smooth way to say..."
+            placeholder={isUkrainian ? "як сказати природніше..." : "smooth way to say..."}
           />
         </label>
 
         <label className="vault-field">
-          <span>Sort</span>
+          <span>{isUkrainian ? "Сортування" : "Sort"}</span>
           <select
             value={sort}
             onChange={(event) =>
               setSort(event.target.value === "mastery" ? "mastery" : "recent")
             }
           >
-            <option value="recent">Most recent</option>
-            <option value="mastery">Highest mastery</option>
+            <option value="recent">{isUkrainian ? "Найновіші" : "Most recent"}</option>
+            <option value="mastery">{isUkrainian ? "Найвищий mastery" : "Highest mastery"}</option>
           </select>
         </label>
 
@@ -205,7 +304,13 @@ export function PhraseVaultPanel() {
           onClick={() => setSessionOnly((previous) => !previous)}
           disabled={!canFilterBySession}
         >
-          {sessionOnly ? "Session filter: on" : "Session filter: off"}
+          {sessionOnly
+            ? isUkrainian
+              ? "Фільтр сесії: увімк."
+              : "Session filter: on"
+            : isUkrainian
+              ? "Фільтр сесії: вимк."
+              : "Session filter: off"}
         </button>
       </div>
 
@@ -217,26 +322,53 @@ export function PhraseVaultPanel() {
 
       <div className="vault-list">
         {isLoading && items.length === 0 ? (
-          <p className="vault-empty">Loading phrase vault...</p>
+          <p className="vault-empty">
+            {isUkrainian ? "Завантаження Phrase Vault..." : "Loading phrase vault..."}
+          </p>
         ) : items.length === 0 ? (
           <p className="vault-empty">
-            No saved phrases yet. Save phrases from assistant replies in roleplay chat.
+            {isUkrainian
+              ? "Поки немає збережених фраз. Зберігай фрази з відповідей асистента у рольовому чаті."
+              : "No saved phrases yet. Save phrases from assistant replies in roleplay chat."}
           </p>
         ) : (
           items.map((item) => (
             <article key={item.id} className="vault-item">
               <header>
                 <h3>{item.phrase}</h3>
-                <small>Mastery: {item.mastery}</small>
+                <div className="vault-item-header-actions">
+                  <small>{isUkrainian ? "Mastery" : "Mastery"}: {item.mastery}</small>
+                  <button
+                    type="button"
+                    className="vault-delete-button"
+                    onClick={() => {
+                      void deletePhrase(item);
+                    }}
+                    disabled={isLoading || deletingPhraseId === item.id}
+                  >
+                    {deletingPhraseId === item.id
+                      ? isUkrainian
+                        ? "Видаляємо..."
+                        : "Deleting..."
+                      : isUkrainian
+                        ? "Видалити"
+                        : "Delete"}
+                  </button>
+                </div>
               </header>
 
               {item.context ? <p>{item.context}</p> : null}
 
               <div className="vault-meta">
-                <span>Saved: {formatDateTime(item.createdAt)}</span>
-                <span>Next review: {formatDateTime(item.nextReviewAt)}</span>
+                <span>{isUkrainian ? "Збережено" : "Saved"}: {formatDateTime(item.createdAt)}</span>
+                <span>
+                  {isUkrainian ? "Наступний повтор" : "Next review"}:{" "}
+                  {formatDateTime(item.nextReviewAt)}
+                </span>
                 {item.session?.scenario ? (
-                  <span>Scenario: {item.session.scenario.title}</span>
+                  <span>
+                    {isUkrainian ? "Сценарій" : "Scenario"}: {item.session.scenario.title}
+                  </span>
                 ) : null}
               </div>
             </article>
@@ -253,11 +385,11 @@ export function PhraseVaultPanel() {
           }}
           disabled={isLoading || page <= 1}
         >
-          Previous
+          {isUkrainian ? "Назад" : "Previous"}
         </button>
 
         <p>
-          Page {page} / {totalPages}
+          {isUkrainian ? "Сторінка" : "Page"} {page} / {totalPages}
         </p>
 
         <button
@@ -268,7 +400,7 @@ export function PhraseVaultPanel() {
           }}
           disabled={isLoading || page >= totalPages}
         >
-          Next
+          {isUkrainian ? "Далі" : "Next"}
         </button>
       </div>
     </div>

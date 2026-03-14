@@ -3,18 +3,23 @@
 import { useEffect, useState } from "react";
 
 import { useAuth } from "./auth-provider";
+import { useLocale } from "./locale-provider";
 import {
+  DEFAULT_AI_MODEL,
   defaultOnboardingState,
   englishLevels,
   goalOptions,
   loadOnboardingStateFromStorage,
   type OnboardingState,
   personaStyles,
-  saveOnboardingStateToStorage
+  saveOnboardingStateToStorage,
+  suggestedAiModels
 } from "../lib/onboarding-state";
 
 export function OnboardingPanel() {
   const { user } = useAuth();
+  const { locale } = useLocale();
+  const isUkrainian = locale === "uk";
   const [state, setState] = useState<OnboardingState>(defaultOnboardingState);
   const [isHydrated, setIsHydrated] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -28,15 +33,23 @@ export function OnboardingPanel() {
 
       if (onboardingState.loaded) {
         setStatusKind("ok");
-        setStatusMessage("Loaded your previous onboarding choices.");
+        setStatusMessage(
+          isUkrainian
+            ? "Попередні параметри онбордингу завантажено."
+            : "Loaded your previous onboarding choices."
+        );
       }
     } catch {
       setStatusKind("error");
-      setStatusMessage("Could not read local onboarding data.");
+      setStatusMessage(
+        isUkrainian
+          ? "Не вдалося прочитати локальні дані онбордингу."
+          : "Could not read local onboarding data."
+      );
     } finally {
       setIsHydrated(true);
     }
-  }, []);
+  }, [isUkrainian]);
 
   function toggleGoal(goalId: string) {
     setState((previous) => {
@@ -59,16 +72,33 @@ export function OnboardingPanel() {
     }));
   }
 
+  function updateAiModel(value: string) {
+    setState((previous) => ({
+      ...previous,
+      aiModel: value.slice(0, 80)
+    }));
+  }
+
   function saveOnboarding() {
     if (state.goals.length === 0) {
       setStatusKind("error");
-      setStatusMessage("Choose at least one goal.");
+      setStatusMessage(
+        isUkrainian ? "Обери хоча б одну навчальну ціль." : "Choose at least one goal."
+      );
       return;
     }
 
     if (!state.nativeLanguage.trim()) {
       setStatusKind("error");
-      setStatusMessage("Native language is required.");
+      setStatusMessage(
+        isUkrainian ? "Вкажи рідну мову." : "Native language is required."
+      );
+      return;
+    }
+
+    if (!state.aiModel.trim()) {
+      setStatusKind("error");
+      setStatusMessage(isUkrainian ? "Вкажи AI-модель." : "AI model is required.");
       return;
     }
 
@@ -76,17 +106,29 @@ export function OnboardingPanel() {
       saveOnboardingStateToStorage(state);
 
       setStatusKind("ok");
-      setStatusMessage("Onboarding saved locally. You can continue to scenarios.");
+      setStatusMessage(
+        isUkrainian
+          ? "Онбординг збережено локально. Можна переходити до сценаріїв."
+          : "Onboarding saved locally. You can continue to scenarios."
+      );
     } catch {
       setStatusKind("error");
-      setStatusMessage("Could not save onboarding data.");
+      setStatusMessage(
+        isUkrainian
+          ? "Не вдалося зберегти дані онбордингу."
+          : "Could not save onboarding data."
+      );
     }
   }
 
   if (!isHydrated) {
     return (
       <div className="onboarding-panel">
-        <p className="onboarding-status">Loading onboarding preferences...</p>
+        <p className="onboarding-status">
+          {isUkrainian
+            ? "Завантажуємо параметри онбордингу..."
+            : "Loading onboarding preferences..."}
+        </p>
       </div>
     );
   }
@@ -95,7 +137,9 @@ export function OnboardingPanel() {
     return (
       <div className="onboarding-panel">
         <p className="onboarding-status">
-          Sign in first to unlock onboarding and session setup.
+          {isUkrainian
+            ? "Спочатку увійди в акаунт, щоб відкрити онбординг і створення сесій."
+            : "Sign in first to unlock onboarding and session setup."}
         </p>
       </div>
     );
@@ -104,13 +148,14 @@ export function OnboardingPanel() {
   return (
     <div className="onboarding-panel">
       <p className="onboarding-copy">
-        Set your baseline so the roleplay tone and correction style fit your
-        learning goals.
+        {isUkrainian
+          ? "Налаштуй базові параметри, щоб тон рольової практики і стиль корекцій відповідали твоїм цілям."
+          : "Set your baseline so the roleplay tone and correction style fit your learning goals."}
       </p>
 
       <div className="onboarding-grid">
         <label className="onboarding-field">
-          <span>English level</span>
+          <span>{isUkrainian ? "Рівень англійської" : "English level"}</span>
           <select
             value={state.level}
             onChange={(event) =>
@@ -129,7 +174,7 @@ export function OnboardingPanel() {
         </label>
 
         <label className="onboarding-field">
-          <span>Persona style</span>
+          <span>{isUkrainian ? "Стиль персонажа" : "Persona style"}</span>
           <select
             value={state.personaStyle}
             onChange={(event) =>
@@ -141,14 +186,21 @@ export function OnboardingPanel() {
           >
             {personaStyles.map((style) => (
               <option key={style} value={style}>
-                {style}
+                {isUkrainian
+                  ? {
+                      soft: "м'який",
+                      confident: "впевнений",
+                      playful: "грайливий",
+                      professional: "професійний"
+                    }[style]
+                  : style}
               </option>
             ))}
           </select>
         </label>
 
         <label className="onboarding-field">
-          <span>Native language</span>
+          <span>{isUkrainian ? "Рідна мова" : "Native language"}</span>
           <input
             type="text"
             value={state.nativeLanguage}
@@ -158,7 +210,7 @@ export function OnboardingPanel() {
         </label>
 
         <label className="onboarding-field">
-          <span>Timezone</span>
+          <span>{isUkrainian ? "Часовий пояс" : "Timezone"}</span>
           <input
             type="text"
             value={state.timezone}
@@ -171,10 +223,27 @@ export function OnboardingPanel() {
             placeholder="Europe/Kiev"
           />
         </label>
+
+        <label className="onboarding-field">
+          <span>{isUkrainian ? "AI-модель" : "AI model"}</span>
+          <input
+            type="text"
+            list="onboarding-openai-models"
+            value={state.aiModel}
+            onChange={(event) => updateAiModel(event.target.value)}
+            placeholder={DEFAULT_AI_MODEL}
+          />
+        </label>
       </div>
 
+      <datalist id="onboarding-openai-models">
+        {suggestedAiModels.map((model) => (
+          <option key={model} value={model} />
+        ))}
+      </datalist>
+
       <div className="goal-picker">
-        <p>Learning goals</p>
+        <p>{isUkrainian ? "Навчальні цілі" : "Learning goals"}</p>
         <div className="goal-chips">
           {goalOptions.map((goal) => {
             const active = state.goals.includes(goal.id);
@@ -186,7 +255,16 @@ export function OnboardingPanel() {
                 type="button"
                 onClick={() => toggleGoal(goal.id)}
               >
-                {goal.label}
+                {isUkrainian
+                  ? {
+                      dating: "Знайомства",
+                      travel: "Подорожі",
+                      work: "Робота",
+                      smalltalk: "Small talk",
+                      interview: "Співбесіда",
+                      grammar: "Граматика і ясність"
+                    }[goal.id] ?? goal.label
+                  : goal.label}
               </button>
             );
           })}
@@ -194,7 +272,7 @@ export function OnboardingPanel() {
       </div>
 
       <button className="auth-button" type="button" onClick={saveOnboarding}>
-        Save onboarding
+        {isUkrainian ? "Зберегти онбординг" : "Save onboarding"}
       </button>
 
       {statusMessage ? (

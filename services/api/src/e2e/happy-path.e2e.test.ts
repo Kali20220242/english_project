@@ -54,17 +54,22 @@ async function waitForApiHealth(timeoutMs: number) {
 
 async function jsonRequest(input: {
   path: string;
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "DELETE";
   body?: unknown;
 }) {
+  const headers: Record<string, string> = {
+    "x-test-firebase-uid": testUid,
+    "x-test-email": testEmail,
+    authorization: "Bearer integration-test-token"
+  };
+
+  if (typeof input.body !== "undefined") {
+    headers["content-type"] = "application/json";
+  }
+
   const response = await fetch(`${apiBaseUrl}${input.path}`, {
     method: input.method,
-    headers: {
-      "content-type": "application/json",
-      "x-test-firebase-uid": testUid,
-      "x-test-email": testEmail,
-      authorization: "Bearer integration-test-token"
-    },
+    headers,
     body: input.body ? JSON.stringify(input.body) : undefined
   });
 
@@ -260,12 +265,40 @@ test("e2e happy-path: login -> session -> turns -> phrase save", async () => {
   const phrases =
     (phraseVault.payload as {
       items?: Array<{
+        id: string;
         phrase: string;
       }>;
     }).items ?? [];
-  assert.ok(
-    phrases.some((item) =>
+  const createdPhrase = phrases.find((item) =>
+    item.phrase.toLowerCase().includes("sound more natural")
+  );
+  assert.ok(createdPhrase);
+
+  if (!createdPhrase) {
+    throw new Error("Expected created phrase to be available for delete test.");
+  }
+
+  const deletedPhrase = await jsonRequest({
+    path: `/v1/phrases/${createdPhrase.id}`,
+    method: "DELETE"
+  });
+  assert.equal(deletedPhrase.response.status, 200);
+
+  const phraseVaultAfterDelete = await jsonRequest({
+    path: `/v1/phrases?sessionId=${sessionId}&limit=20`,
+    method: "GET"
+  });
+  assert.equal(phraseVaultAfterDelete.response.status, 200);
+  const phrasesAfterDelete =
+    (phraseVaultAfterDelete.payload as {
+      items?: Array<{
+        phrase: string;
+      }>;
+    }).items ?? [];
+  assert.equal(
+    phrasesAfterDelete.some((item) =>
       item.phrase.toLowerCase().includes("sound more natural")
-    )
+    ),
+    false
   );
 });
